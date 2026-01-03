@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Upload, Download, Trash2, Plus, DollarSign, CheckCircle, Mail, Zap, Shield, ArrowRight, X } from 'lucide-react';
-import * as XLSX from 'xlsx';
 
 const EmailListCleaner = () => {
   const [showApp, setShowApp] = useState(false);
