@@ -174,6 +174,96 @@ const validateFileContent = (data) => {
 };
 
 /**
+ * Extract potential name from email address
+ * @param {string} email - The email address to parse
+ * @returns {object} - { firstName, lastName, fullName }
+ */
+const extractNameFromEmail = (email) => {
+  if (!email || typeof email !== 'string') {
+    return { firstName: '', lastName: '', fullName: '' };
+  }
+
+  // Get the part before @
+  const localPart = email.split('@')[0];
+  if (!localPart) {
+    return { firstName: '', lastName: '', fullName: '' };
+  }
+
+  // Clean up the local part - remove numbers at the end (like john.doe123)
+  let cleaned = localPart.replace(/\d+$/, '');
+
+  // Skip if it looks like a generic/business email
+  const genericPatterns = [
+    /^(info|contact|support|admin|sales|hello|help|service|noreply|no-reply|mail|email|office|team|hr|marketing|billing)$/i,
+    /^[a-z]{1,2}\d+$/i, // like "a1", "ab123"
+  ];
+
+  if (genericPatterns.some(pattern => pattern.test(cleaned))) {
+    return { firstName: '', lastName: '', fullName: '' };
+  }
+
+  let parts = [];
+
+  // Try different separators: dot, underscore, hyphen
+  if (cleaned.includes('.')) {
+    parts = cleaned.split('.');
+  } else if (cleaned.includes('_')) {
+    parts = cleaned.split('_');
+  } else if (cleaned.includes('-')) {
+    parts = cleaned.split('-');
+  } else {
+    // Try to detect camelCase or concatenated names (johnsmith -> John Smith)
+    // Look for common first names at the start
+    const commonFirstNames = [
+      'james', 'john', 'robert', 'michael', 'david', 'william', 'richard', 'joseph', 'thomas', 'charles',
+      'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen',
+      'daniel', 'matthew', 'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth',
+      'nancy', 'betty', 'margaret', 'sandra', 'ashley', 'kimberly', 'emily', 'donna', 'michelle', 'dorothy',
+      'alex', 'alexis', 'anna', 'anna', 'chris', 'christopher', 'christine', 'eric', 'erik', 'jason',
+      'brian', 'kevin', 'ryan', 'justin', 'brandon', 'jacob', 'nicholas', 'tyler', 'aaron', 'adam',
+      'amanda', 'melissa', 'stephanie', 'nicole', 'heather', 'rachel', 'samantha', 'katherine', 'christine', 'deborah',
+      'alyssa', 'valentino', 'yeliz', 'shima', 'shira', 'troy', 'gonzalez', 'karen'
+    ];
+
+    const lowerCleaned = cleaned.toLowerCase();
+    let matchedFirstName = null;
+
+    for (const firstName of commonFirstNames) {
+      if (lowerCleaned.startsWith(firstName) && lowerCleaned.length > firstName.length) {
+        matchedFirstName = firstName;
+        break;
+      }
+    }
+
+    if (matchedFirstName) {
+      parts = [matchedFirstName, cleaned.substring(matchedFirstName.length)];
+    } else {
+      // Can't split it reliably, just use as single name
+      parts = [cleaned];
+    }
+  }
+
+  // Filter out empty parts and very short parts (likely initials we can't interpret)
+  parts = parts.filter(p => p && p.length > 1);
+
+  if (parts.length === 0) {
+    return { firstName: '', lastName: '', fullName: '' };
+  }
+
+  // Capitalize each part properly
+  const capitalize = (str) => {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  };
+
+  const firstName = capitalize(parts[0]);
+  const lastName = parts.length > 1 ? parts.slice(1).map(capitalize).join(' ') : '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+
+  return { firstName, lastName, fullName };
+};
+
+/**
  * Sanitize a filename to prevent path traversal and other attacks
  * @param {string} filename - The filename to sanitize
  * @returns {string} - Sanitized filename
@@ -360,6 +450,7 @@ const EmailListCleaner = () => {
     let invalidEmails = 0;
     let duplicates = 0;
     let sanitizedCells = 0;
+    let namesExtracted = 0;
 
     rows.forEach(row => {
       const rowData = {};
@@ -404,6 +495,17 @@ const EmailListCleaner = () => {
         lastName = parts.slice(1).join(' ') || '';
       }
 
+      // If we still don't have name data, try to extract from email
+      if (!firstName && !lastName && !name) {
+        const extracted = extractNameFromEmail(email);
+        if (extracted.fullName) {
+          firstName = extracted.firstName;
+          lastName = extracted.lastName;
+          name = extracted.fullName;
+          namesExtracted++;
+        }
+      }
+
       processed.push({
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         name: sanitizeCell(name || `${firstName} ${lastName}`.trim()) || '',
@@ -422,6 +524,9 @@ const EmailListCleaner = () => {
     if (invalidEmails > 0) {
       console.log(`Security: Blocked ${invalidEmails} invalid/suspicious emails`);
     }
+    if (namesExtracted > 0) {
+      console.log(`Names: Extracted ${namesExtracted} names from email addresses`);
+    }
 
     return {
       data: processed,
@@ -430,7 +535,8 @@ const EmailListCleaner = () => {
         valid: processed.length,
         invalid: invalidEmails,
         duplicates: duplicates,
-        sanitized: sanitizedCells
+        sanitized: sanitizedCells,
+        namesExtracted: namesExtracted
       }
     };
   };
@@ -557,6 +663,9 @@ const EmailListCleaner = () => {
           }
           if (stats.invalid > 0) {
             message += ` ${stats.invalid} invalid emails filtered.`;
+          }
+          if (stats.namesExtracted > 0) {
+            message += ` ${stats.namesExtracted} names extracted from emails.`;
           }
           addNotification(message, 'success');
 
@@ -1177,6 +1286,12 @@ const EmailListCleaner = () => {
                     <>
                       <span>•</span>
                       <span>{activeFile.stats.duplicates} duplicates removed</span>
+                    </>
+                  )}
+                  {activeFile.stats?.namesExtracted > 0 && (
+                    <>
+                      <span>•</span>
+                      <span>{activeFile.stats.namesExtracted} names extracted</span>
                     </>
                   )}
                 </div>
