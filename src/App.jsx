@@ -355,11 +355,32 @@ const EmailListCleaner = () => {
       }
     });
 
-    // Check for payment success
+    // Check for payment success - restore files and verify payment
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('payment') === 'success') {
       const sessionId = urlParams.get('session_id');
-      verifyPayment(sessionId);
+      console.log('Payment success detected, session:', sessionId);
+
+      // Restore files from localStorage first
+      let restoredFiles = [];
+      try {
+        const savedFiles = localStorage.getItem('csv_cleaner_files');
+        console.log('Saved files from localStorage:', savedFiles ? 'found' : 'not found');
+        if (savedFiles) {
+          restoredFiles = JSON.parse(savedFiles);
+          console.log('Restored files count:', restoredFiles.length);
+          setFiles(restoredFiles);
+          setShowApp(true);
+          if (restoredFiles.length > 0) {
+            setActiveTab(restoredFiles[0].id);
+          }
+        }
+      } catch (e) {
+        console.error('Error restoring files:', e);
+      }
+
+      // Verify payment and trigger download
+      verifyPaymentAndDownload(sessionId, restoredFiles);
     }
 
     return () => {
@@ -764,6 +785,16 @@ const EmailListCleaner = () => {
     try {
       const fileCount = files.length;
 
+      // Save files to localStorage before redirecting to Stripe
+      try {
+        localStorage.setItem('csv_cleaner_files', JSON.stringify(files));
+        console.log('Files saved to localStorage before payment redirect');
+      } catch (e) {
+        console.error('Error saving files to localStorage:', e);
+        addNotification('Error preparing files for download. Please try again.', 'error');
+        return;
+      }
+
       const response = await fetch('/api/create-download-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -792,6 +823,65 @@ const EmailListCleaner = () => {
     }
   };
 
+  // New combined verify and download function
+  const verifyPaymentAndDownload = async (sessionId, restoredFiles) => {
+    try {
+      console.log('Verifying payment for session:', sessionId);
+
+      const response = await fetch('/api/verify-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('Payment verification response:', data);
+
+      if (data.paid) {
+        setPaid(true);
+
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+
+        addNotification('Payment successful! Your files are ready to download.', 'success');
+
+        // Use restored files directly since state might not be updated yet
+        const filesToDownload = restoredFiles.length > 0 ? restoredFiles : files;
+
+        console.log('Files to download:', filesToDownload.length);
+
+        if (filesToDownload.length === 0) {
+          addNotification('No files found. Please upload your files again.', 'error');
+          return;
+        }
+
+        // Initialize file renames and show modal
+        const renames = {};
+        filesToDownload.forEach(file => {
+          renames[file.id] = sanitizeFilename(`cleaned_${file.name}`);
+        });
+
+        // Small delay to ensure state is ready, then show modal
+        setTimeout(() => {
+          setFileRenames(renames);
+          setShowFileRename(true);
+          console.log('Download modal should now be visible');
+        }, 300);
+
+      } else {
+        console.error('Payment verification failed:', data.error);
+        addNotification('Payment verification failed. Please contact support.', 'error');
+      }
+    } catch (error) {
+      console.error('Verification error:', error);
+      addNotification('Could not verify payment. Please contact support with your order details.', 'error');
+    }
+  };
+
   const verifyPayment = async (sessionId) => {
     try {
       const response = await fetch('/api/verify-payment', {
@@ -811,10 +901,28 @@ const EmailListCleaner = () => {
         window.history.replaceState({}, document.title, window.location.pathname);
         addNotification('Payment successful! Your files are ready to download.', 'success');
 
-        // Auto-open file rename dialog
+        // Get files from localStorage since state might not be ready yet
+        let filesToDownload = files;
+        if (filesToDownload.length === 0) {
+          try {
+            const savedFiles = localStorage.getItem('csv_cleaner_files');
+            if (savedFiles) {
+              filesToDownload = JSON.parse(savedFiles);
+              setFiles(filesToDownload);
+              setShowApp(true);
+              if (filesToDownload.length > 0) {
+                setActiveTab(filesToDownload[0].id);
+              }
+            }
+          } catch (e) {
+            console.error('Error restoring files:', e);
+          }
+        }
+
+        // Prepare downloads with slight delay to ensure state is ready
         setTimeout(() => {
-          prepareDownloads();
-        }, 1000);
+          prepareDownloadsWithFiles(filesToDownload);
+        }, 500);
       } else {
         console.error('Payment verification failed:', data.error);
         addNotification('Payment verification failed. Please contact support.', 'error');
@@ -825,14 +933,24 @@ const EmailListCleaner = () => {
     }
   };
 
-  const prepareDownloads = () => {
-    // Initialize file renames with sanitized default names
+  // Prepare downloads with explicit files parameter (for post-payment flow)
+  const prepareDownloadsWithFiles = (filesToUse) => {
+    const fileList = filesToUse || files;
+    if (fileList.length === 0) {
+      addNotification('No files found to download. Please upload your files again.', 'error');
+      return;
+    }
+
     const renames = {};
-    files.forEach(file => {
+    fileList.forEach(file => {
       renames[file.id] = sanitizeFilename(`cleaned_${file.name}`);
     });
     setFileRenames(renames);
     setShowFileRename(true);
+  };
+
+  const prepareDownloads = () => {
+    prepareDownloadsWithFiles(files);
   };
 
   const handleDownloadAll = () => {
@@ -846,7 +964,26 @@ const EmailListCleaner = () => {
   };
 
   const executeDownloads = () => {
-    files.forEach(file => {
+    // Get files - prefer state, fallback to localStorage
+    let filesToDownload = files;
+    if (filesToDownload.length === 0) {
+      try {
+        const savedFiles = localStorage.getItem('csv_cleaner_files');
+        if (savedFiles) {
+          filesToDownload = JSON.parse(savedFiles);
+        }
+      } catch (e) {
+        console.error('Error getting files:', e);
+      }
+    }
+
+    if (filesToDownload.length === 0) {
+      addNotification('No files to download. Please upload your files again.', 'error');
+      setShowFileRename(false);
+      return;
+    }
+
+    filesToDownload.forEach(file => {
       const enabledColumns = file.columns.filter(col => col.enabled);
       const exportData = file.data.map(row => {
         const exportRow = {};
@@ -877,7 +1014,12 @@ const EmailListCleaner = () => {
       const url = URL.createObjectURL(blob);
 
       // Security: Sanitize the download filename
-      const downloadName = sanitizeFilename(fileRenames[file.id] || `cleaned_${file.name}`);
+      let downloadName = fileRenames[file.id] || `cleaned_${file.name}`;
+      // Ensure .csv extension
+      if (!downloadName.toLowerCase().endsWith('.csv')) {
+        downloadName += '.csv';
+      }
+      downloadName = sanitizeFilename(downloadName);
 
       link.setAttribute('href', url);
       link.setAttribute('download', downloadName);
@@ -888,8 +1030,15 @@ const EmailListCleaner = () => {
       URL.revokeObjectURL(url);
     });
 
+    // Clean up localStorage after successful download
+    try {
+      localStorage.removeItem('csv_cleaner_files');
+    } catch (e) {
+      console.error('Error cleaning localStorage:', e);
+    }
+
     setShowFileRename(false);
-    addNotification(`Successfully downloaded ${files.length} file${files.length > 1 ? 's' : ''}!`, 'success');
+    addNotification(`Successfully downloaded ${filesToDownload.length} file${filesToDownload.length > 1 ? 's' : ''}!`, 'success');
   };
 
   const activeFile = files.find(f => f.id === activeTab);
@@ -1428,26 +1577,47 @@ const EmailListCleaner = () => {
           </div>
         )}
 
-        {/* File Rename Modal */}
+        {/* File Rename Modal - Save As Dialog */}
         {showFileRename && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
-              <h3 className="text-2xl font-bold text-gray-800 mb-2">Name Your Files</h3>
-              <p className="text-gray-600 mb-6">Customize file names before downloading</p>
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto shadow-2xl">
+              {/* Success Header */}
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <CheckCircle className="w-10 h-10 text-green-500" />
+                </div>
+                <h3 className="text-2xl font-bold text-gray-800">Payment Successful!</h3>
+                <p className="text-gray-600 mt-2">Your files are ready. Name them and click download.</p>
+              </div>
 
               <div className="space-y-4 mb-6">
-                {files.map(file => (
-                  <div key={file.id}>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      {file.name} ({file.data.length} contacts)
-                    </label>
-                    <input
-                      type="text"
-                      value={fileRenames[file.id] || ''}
-                      onChange={(e) => setFileRenames({ ...fileRenames, [file.id]: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      placeholder="Enter file name..."
-                    />
+                {(files.length > 0 ? files : (() => {
+                  try {
+                    const saved = localStorage.getItem('csv_cleaner_files');
+                    return saved ? JSON.parse(saved) : [];
+                  } catch { return []; }
+                })()).map((file, index) => (
+                  <div key={file.id} className="bg-gray-50 rounded-lg p-4">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
+                        <span className="text-indigo-600 font-bold text-sm">{index + 1}</span>
+                      </div>
+                      <div>
+                        <span className="text-sm font-medium text-gray-700">Original: {file.name}</span>
+                        <span className="text-xs text-gray-500 ml-2">({file.data?.length || 0} contacts)</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500 text-sm">Save as:</span>
+                      <input
+                        type="text"
+                        value={fileRenames[file.id] || ''}
+                        onChange={(e) => setFileRenames({ ...fileRenames, [file.id]: e.target.value })}
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="Enter file name..."
+                      />
+                      <span className="text-gray-400 text-sm">.csv</span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1455,18 +1625,19 @@ const EmailListCleaner = () => {
               <div className="flex gap-3">
                 <button
                   onClick={executeDownloads}
-                  className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-lg font-bold transition flex items-center justify-center gap-2"
+                  className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white py-4 rounded-lg font-bold text-lg transition flex items-center justify-center gap-2 shadow-lg"
                 >
-                  <Download className="w-5 h-5" />
-                  Download All
-                </button>
-                <button
-                  onClick={() => setShowFileRename(false)}
-                  className="px-6 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-medium transition"
-                >
-                  Cancel
+                  <Download className="w-6 h-6" />
+                  Download Files Now
                 </button>
               </div>
+
+              <button
+                onClick={() => setShowFileRename(false)}
+                className="w-full mt-3 text-gray-500 hover:text-gray-700 py-2 text-sm transition"
+              >
+                Download Later
+              </button>
             </div>
           </div>
         )}
