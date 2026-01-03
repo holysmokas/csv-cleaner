@@ -12,6 +12,15 @@ export async function onRequestPost(context) {
 
         const selectedPrice = prices[plan];
 
+        if (!selectedPrice) {
+            return new Response(JSON.stringify({ error: 'Invalid plan' }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        const origin = new URL(context.request.url).origin;
+
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
             line_items: [
@@ -28,14 +37,18 @@ export async function onRequestPost(context) {
                 },
             ],
             mode: 'payment',
-            success_url: `${context.request.headers.get('origin')}?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${context.request.headers.get('origin')}?payment=canceled`,
+            success_url: `${origin}?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${origin}?payment=canceled`,
         });
 
         return new Response(JSON.stringify({ url: session.url }), {
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
         });
     } catch (error) {
+        console.error('Stripe error:', error);
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
