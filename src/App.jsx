@@ -212,28 +212,26 @@ const EmailListCleaner = () => {
   };
 
   const processPayment = async () => {
-    // This is where you'd integrate Stripe Checkout
-    // Example:
-    /*
-    const response = await fetch('https://yourdomain.com/api/create-checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        plan: selectedPlan,
-        amount: pricingPlans[selectedPlan].price * 100,
-        success_url: window.location.href + '?payment=success',
-        cancel_url: window.location.href
-      })
-    });
-    const { url } = await response.json();
-    window.location.href = url;
-    */
+    try {
+      const response = await fetch('/api/create-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: selectedPlan })
+      });
 
-    // Simulated payment
-    setTimeout(() => {
-      setPaid(true);
-      setShowPayment(false);
-    }, 1500);
+      const { url, error } = await response.json();
+
+      if (error) {
+        alert('Payment failed: ' + error);
+        return;
+      }
+
+      // Redirect to Stripe Checkout
+      window.location.href = url;
+    } catch (error) {
+      console.error('Payment error:', error);
+      alert('Payment failed. Please try again.');
+    }
   };
 
   const handleDownload = () => {
@@ -543,8 +541,8 @@ const EmailListCleaner = () => {
                   <label
                     key={key}
                     className={`block border-2 rounded-lg p-4 cursor-pointer transition ${selectedPlan === key
-                        ? 'border-indigo-600 bg-indigo-50'
-                        : 'border-gray-200 hover:border-gray-300'
+                      ? 'border-indigo-600 bg-indigo-50'
+                      : 'border-gray-200 hover:border-gray-300'
                       }`}
                   >
                     <input
