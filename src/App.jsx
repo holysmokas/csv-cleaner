@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { supabase } from './lib/supabase';
 
 const EmailListCleaner = () => {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+  const [authMode, setAuthMode] = useState('login');
   const [user, setUser] = useState(null);
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   // App state
   const [showApp, setShowApp] = useState(false);
@@ -17,15 +20,25 @@ const EmailListCleaner = () => {
   const [loading, setLoading] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
   const [paid, setPaid] = useState(false);
-  const [showColumnEditor, setShowColumnEditor] = useState(false);
 
-  // Check for existing session
+  // Check for existing session on mount
   useEffect(() => {
-    const savedUser = localStorage.getItem('user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-      setIsAuthenticated(true);
-    }
+    checkUser();
+
+    // Listen for auth changes
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        setUser({
+          id: session.user.id,
+          email: session.user.email,
+          name: session.user.user_metadata?.name || session.user.email.split('@')[0]
+        });
+        setIsAuthenticated(true);
+      } else {
+        setUser(null);
+        setIsAuthenticated(false);
+      }
+    });
 
     // Check for payment success
     const urlParams = new URLSearchParams(window.location.search);
@@ -33,74 +46,73 @@ const EmailListCleaner = () => {
       const sessionId = urlParams.get('session_id');
       verifyPayment(sessionId);
     }
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
+
+  const checkUser = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user) {
+      setUser({
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.user_metadata?.name || session.user.email.split('@')[0]
+      });
+      setIsAuthenticated(true);
+    }
+  };
 
   // Auth functions
   const handleAuth = async (e) => {
     e.preventDefault();
+    setAuthLoading(true);
+    setAuthError('');
 
-    // Simple validation
-    if (!authForm.email || !authForm.password) {
-      alert('Please fill in all fields');
-      return;
-    }
+    try {
+      if (authMode === 'register') {
+        const { data, error } = await supabase.auth.signUp({
+          email: authForm.email,
+          password: authForm.password,
+          options: {
+            data: {
+              name: authForm.name
+            }
+          }
+        });
 
-    if (authMode === 'register' && !authForm.name) {
-      alert('Please enter your name');
-      return;
-    }
+        if (error) throw error;
 
-    // In production, this would call your API
-    // For now, we'll simulate with localStorage
-    if (authMode === 'register') {
-      const users = JSON.parse(localStorage.getItem('users') || '[]');
+        if (data.user) {
+          // Check if email confirmation is required
+          if (data.user.identities?.length === 0) {
+            setAuthError('This email is already registered. Please sign in instead.');
+          } else {
+            alert('Registration successful! Please check your email to confirm your account.');
+            setAuthMode('login');
+          }
+        }
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authForm.email,
+          password: authForm.password
+        });
 
-      // Check if email exists
-      if (users.find(u => u.email === authForm.email)) {
-        alert('Email already registered');
-        return;
+        if (error) throw error;
+
+        setShowAuth(false);
+        setAuthForm({ email: '', password: '', name: '' });
       }
-
-      const newUser = {
-        id: Date.now(),
-        name: authForm.name,
-        email: authForm.email,
-        password: authForm.password, // In production, this would be hashed server-side
-        createdAt: new Date().toISOString()
-      };
-
-      users.push(newUser);
-      localStorage.setItem('users', JSON.stringify(users));
-
-      const userSession = { id: newUser.id, name: newUser.name, email: newUser.email };
-      localStorage.setItem('user', JSON.stringify(userSession));
-      setUser(userSession);
-      setIsAuthenticated(true);
-      setShowAuth(false);
-      setAuthForm({ email: '', password: '', name: '' });
-    } else {
-      // Login
-      const users = JSON.parse(localStorage.getItem('users') || '[]');
-      const foundUser = users.find(u => u.email === authForm.email && u.password === authForm.password);
-
-      if (!foundUser) {
-        alert('Invalid email or password');
-        return;
-      }
-
-      const userSession = { id: foundUser.id, name: foundUser.name, email: foundUser.email };
-      localStorage.setItem('user', JSON.stringify(userSession));
-      setUser(userSession);
-      setIsAuthenticated(true);
-      setShowAuth(false);
-      setAuthForm({ email: '', password: '', name: '' });
+    } catch (error) {
+      setAuthError(error.message || 'Authentication failed');
+    } finally {
+      setAuthLoading(false);
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('user');
-    setUser(null);
-    setIsAuthenticated(false);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setShowApp(false);
     setFiles([]);
     setActiveTab(null);
@@ -141,7 +153,7 @@ const EmailListCleaner = () => {
       }
 
       processed.push({
-        id: Date.now() + Math.random(),
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         name: name || `${firstName} ${lastName}`.trim() || '',
         email_only: email,
         first_name: firstName || '',
@@ -216,7 +228,7 @@ const EmailListCleaner = () => {
           const processed = processData(rawData);
 
           const newFile = {
-            id: Date.now(),
+            id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             name: uploadedFile.name,
             data: processed,
             columns: [
@@ -279,7 +291,7 @@ const EmailListCleaner = () => {
   const handleAddRow = (fileId) => {
     setFiles(files.map(file => {
       if (file.id === fileId) {
-        const newRow = { id: Date.now() };
+        const newRow = { id: `row-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` };
         file.columns.forEach(col => {
           newRow[col.id] = '';
         });
@@ -347,7 +359,6 @@ const EmailListCleaner = () => {
 
       if (paymentVerified) {
         setPaid(true);
-        // Clean URL
         window.history.replaceState({}, document.title, window.location.pathname);
       }
     } catch (error) {
@@ -406,7 +417,7 @@ const EmailListCleaner = () => {
         {/* Header with Auth */}
         <div className="container mx-auto px-6 py-6">
           <div className="flex justify-between items-center">
-            <div className="text-white text-2xl font-bold">CSV Cleaner</div>
+            <div className="text-white text-2xl font-bold">EmailCleaner</div>
             <button
               onClick={() => { setShowAuth(true); setAuthMode('login'); }}
               className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 rounded-full font-medium backdrop-blur-sm border border-white/20 transition"
@@ -443,7 +454,7 @@ const EmailListCleaner = () => {
               <ArrowRight className="w-6 h-6" />
             </button>
 
-            <p className="text-gray-400 mt-6">First file free • Pay only when you download</p>
+            <p className="text-gray-400 mt-6">First file free preview • Pay only when you download</p>
           </div>
 
           {/* Features */}
@@ -482,10 +493,16 @@ const EmailListCleaner = () => {
                 <h2 className="text-2xl font-bold text-gray-800">
                   {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
                 </h2>
-                <button onClick={() => setShowAuth(false)} className="text-gray-400 hover:text-gray-600">
+                <button onClick={() => { setShowAuth(false); setAuthError(''); }} className="text-gray-400 hover:text-gray-600">
                   <X className="w-6 h-6" />
                 </button>
               </div>
+
+              {authError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+                  {authError}
+                </div>
+              )}
 
               <form onSubmit={handleAuth} className="space-y-4">
                 {authMode === 'register' && (
@@ -523,20 +540,25 @@ const EmailListCleaner = () => {
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     placeholder="••••••••"
                     required
+                    minLength={6}
                   />
+                  {authMode === 'register' && (
+                    <p className="text-xs text-gray-500 mt-1">Minimum 6 characters</p>
+                  )}
                 </div>
 
                 <button
                   type="submit"
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-lg font-medium transition"
+                  disabled={authLoading}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-lg font-medium transition disabled:opacity-50"
                 >
-                  {authMode === 'login' ? 'Sign In' : 'Create Account'}
+                  {authLoading ? 'Please wait...' : (authMode === 'login' ? 'Sign In' : 'Create Account')}
                 </button>
               </form>
 
               <div className="mt-6 text-center">
                 <button
-                  onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
+                  onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}
                   className="text-indigo-600 hover:text-indigo-700 font-medium"
                 >
                   {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
@@ -555,7 +577,7 @@ const EmailListCleaner = () => {
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
         <div className="container mx-auto px-6 py-6">
           <div className="flex justify-between items-center mb-12">
-            <div className="text-white text-2xl font-bold">CSV Cleaner</div>
+            <div className="text-white text-2xl font-bold">EmailCleaner</div>
             <div className="flex items-center gap-4">
               <div className="text-white flex items-center gap-2">
                 <User className="w-5 h-5" />
@@ -597,7 +619,7 @@ const EmailListCleaner = () => {
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-6">
-              <h1 className="text-2xl font-bold text-gray-800">CSV Cleaner</h1>
+              <h1 className="text-2xl font-bold text-gray-800">EmailCleaner</h1>
               <div className="text-sm text-gray-600">
                 <span className="font-medium">{user?.name}</span>
               </div>
