@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText, AlertCircle, Check, Info } from 'lucide-react';
+import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText, AlertCircle, Check, Info, Edit2, Settings, Eye, EyeOff, Columns } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 
@@ -326,6 +326,11 @@ const EmailListCleaner = () => {
   // File rename state
   const [showFileRename, setShowFileRename] = useState(false);
   const [fileRenames, setFileRenames] = useState({});
+
+  // Column management state
+  const [showColumnManager, setShowColumnManager] = useState(false);
+  const [newColumnName, setNewColumnName] = useState('');
+  const [editingColumn, setEditingColumn] = useState(null); // { fileId, columnId, currentLabel }
 
   // Add notification
   const addNotification = (message, type = 'info') => {
@@ -756,6 +761,120 @@ const EmailListCleaner = () => {
         return {
           ...file,
           data: [...file.data, newRow]
+        };
+      }
+      return file;
+    }));
+  };
+
+  // Column Management Functions
+  const handleAddColumn = (fileId) => {
+    if (!newColumnName.trim()) {
+      addNotification('Please enter a column name', 'error');
+      return;
+    }
+
+    const sanitizedName = sanitizeCell(newColumnName.trim());
+    const columnId = `custom_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        // Check for duplicate column names
+        const existingNames = file.columns.map(c => c.label.toLowerCase());
+        if (existingNames.includes(sanitizedName.toLowerCase())) {
+          addNotification('A column with this name already exists', 'error');
+          return file;
+        }
+
+        return {
+          ...file,
+          columns: [...file.columns, { id: columnId, label: sanitizedName, enabled: true }],
+          data: file.data.map(row => ({ ...row, [columnId]: '' }))
+        };
+      }
+      return file;
+    }));
+
+    setNewColumnName('');
+    addNotification(`Column "${sanitizedName}" added`, 'success');
+  };
+
+  const handleRenameColumn = (fileId, columnId, newLabel) => {
+    if (!newLabel.trim()) {
+      addNotification('Column name cannot be empty', 'error');
+      return;
+    }
+
+    const sanitizedLabel = sanitizeCell(newLabel.trim());
+
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        // Check for duplicate column names (excluding current column)
+        const existingNames = file.columns
+          .filter(c => c.id !== columnId)
+          .map(c => c.label.toLowerCase());
+
+        if (existingNames.includes(sanitizedLabel.toLowerCase())) {
+          addNotification('A column with this name already exists', 'error');
+          return file;
+        }
+
+        return {
+          ...file,
+          columns: file.columns.map(col =>
+            col.id === columnId ? { ...col, label: sanitizedLabel } : col
+          )
+        };
+      }
+      return file;
+    }));
+
+    setEditingColumn(null);
+    addNotification(`Column renamed to "${sanitizedLabel}"`, 'success');
+  };
+
+  const handleDeleteColumn = (fileId, columnId) => {
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        // Don't allow deleting if only one column left
+        if (file.columns.length <= 1) {
+          addNotification('Cannot delete the last column', 'error');
+          return file;
+        }
+
+        return {
+          ...file,
+          columns: file.columns.filter(col => col.id !== columnId),
+          data: file.data.map(row => {
+            const newRow = { ...row };
+            delete newRow[columnId];
+            return newRow;
+          })
+        };
+      }
+      return file;
+    }));
+
+    addNotification('Column deleted', 'success');
+  };
+
+  const handleToggleColumn = (fileId, columnId) => {
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        // Don't allow disabling if it's the last enabled column
+        const enabledCount = file.columns.filter(c => c.enabled).length;
+        const isCurrentlyEnabled = file.columns.find(c => c.id === columnId)?.enabled;
+
+        if (enabledCount <= 1 && isCurrentlyEnabled) {
+          addNotification('At least one column must be enabled', 'error');
+          return file;
+        }
+
+        return {
+          ...file,
+          columns: file.columns.map(col =>
+            col.id === columnId ? { ...col, enabled: !col.enabled } : col
+          )
         };
       }
       return file;
@@ -1427,6 +1546,8 @@ const EmailListCleaner = () => {
                 <div className="flex items-center gap-3 text-sm text-gray-600">
                   <span>{activeFile.data.length} contacts</span>
                   <span>•</span>
+                  <span>{activeFile.columns.filter(c => c.enabled).length} columns</span>
+                  <span>•</span>
                   <span className="flex items-center gap-1">
                     <CheckCircle className="w-3 h-3 text-green-500" />
                     Sanitized
@@ -1447,6 +1568,16 @@ const EmailListCleaner = () => {
               </div>
               <div className="flex gap-3">
                 <button
+                  onClick={() => setShowColumnManager(!showColumnManager)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${showColumnManager
+                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
+                      : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                    }`}
+                >
+                  <Columns className="w-4 h-4" />
+                  Manage Columns
+                </button>
+                <button
                   onClick={() => handleAddRow(activeFile.id)}
                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition"
                 >
@@ -1456,13 +1587,130 @@ const EmailListCleaner = () => {
               </div>
             </div>
 
+            {/* Column Manager Panel */}
+            {showColumnManager && (
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+                    <Settings className="w-4 h-4" />
+                    Column Manager
+                  </h3>
+                  <button
+                    onClick={() => setShowColumnManager(false)}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Add New Column */}
+                <div className="flex gap-2 mb-4">
+                  <input
+                    type="text"
+                    value={newColumnName}
+                    onChange={(e) => setNewColumnName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddColumn(activeFile.id)}
+                    placeholder="New column name..."
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    onClick={() => handleAddColumn(activeFile.id)}
+                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add Column
+                  </button>
+                </div>
+
+                {/* Column List */}
+                <div className="space-y-2">
+                  {activeFile.columns.map((col, index) => (
+                    <div
+                      key={col.id}
+                      className={`flex items-center gap-3 p-3 rounded-lg ${col.enabled ? 'bg-white border border-gray-200' : 'bg-gray-100 border border-gray-200 opacity-60'
+                        }`}
+                    >
+                      {/* Drag Handle / Index */}
+                      <span className="text-gray-400 text-sm font-mono w-6">{index + 1}</span>
+
+                      {/* Column Name (Editable) */}
+                      {editingColumn?.columnId === col.id ? (
+                        <input
+                          type="text"
+                          defaultValue={col.label}
+                          autoFocus
+                          onBlur={(e) => handleRenameColumn(activeFile.id, col.id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleRenameColumn(activeFile.id, col.id, e.target.value);
+                            } else if (e.key === 'Escape') {
+                              setEditingColumn(null);
+                            }
+                          }}
+                          className="flex-1 px-2 py-1 border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      ) : (
+                        <span className="flex-1 font-medium text-gray-700">{col.label}</span>
+                      )}
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-2">
+                        {/* Edit Name */}
+                        <button
+                          onClick={() => setEditingColumn({ fileId: activeFile.id, columnId: col.id, currentLabel: col.label })}
+                          className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition"
+                          title="Rename column"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+
+                        {/* Toggle Visibility */}
+                        <button
+                          onClick={() => handleToggleColumn(activeFile.id, col.id)}
+                          className={`p-1.5 rounded transition ${col.enabled
+                              ? 'text-green-600 hover:bg-green-50'
+                              : 'text-gray-400 hover:bg-gray-100'
+                            }`}
+                          title={col.enabled ? 'Hide column' : 'Show column'}
+                        >
+                          {col.enabled ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                        </button>
+
+                        {/* Delete Column */}
+                        <button
+                          onClick={() => handleDeleteColumn(activeFile.id, col.id)}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
+                          title="Delete column"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="text-xs text-gray-500 mt-3">
+                  💡 Click the edit icon to rename columns. Hidden columns won't appear in exports.
+                </p>
+              </div>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b-2 border-gray-200">
                   <tr>
                     {activeFile.columns.filter(col => col.enabled).map(col => (
                       <th key={col.id} className="px-4 py-3 text-left font-semibold text-gray-700">
-                        {col.label}
+                        <div className="flex items-center gap-2">
+                          {col.label}
+                          <button
+                            onClick={() => setEditingColumn({ fileId: activeFile.id, columnId: col.id, currentLabel: col.label })}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-indigo-600 rounded transition"
+                            title="Rename column"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
+                        </div>
                       </th>
                     ))}
                     <th className="px-4 py-3 text-center font-semibold text-gray-700">Action</th>
