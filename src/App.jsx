@@ -3,6 +3,215 @@ import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, Check
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 
+// ============================================================================
+// SECURITY CONFIGURATION
+// ============================================================================
+const SECURITY_CONFIG = {
+  MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+  MAX_ROWS: 50000, // Maximum rows per file
+  MAX_FILES: 20, // Maximum files per session
+  MAX_CELL_LENGTH: 1000, // Maximum characters per cell
+  ALLOWED_EXTENSIONS: ['.csv', '.xlsx', '.xls'],
+  DANGEROUS_FORMULA_PREFIXES: ['=', '+', '-', '@', '\t', '\r'],
+  SUSPICIOUS_PATTERNS: [
+    /<script/i,
+    /javascript:/i,
+    /on\w+\s*=/i,
+    /<iframe/i,
+    /<object/i,
+    /<embed/i,
+    /vbscript:/i,
+    /data:/i,
+  ],
+  SUSPICIOUS_EMAIL_PATTERNS: [
+    /javascript:/i,
+    /<script/i,
+    /\bexec\b/i,
+    /\beval\b/i,
+    /<[^>]+>/i, // HTML tags in email
+  ]
+};
+
+// ============================================================================
+// SECURITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Sanitize a cell value to prevent CSV injection and XSS attacks
+ * @param {any} value - The cell value to sanitize
+ * @returns {string} - Sanitized string value
+ */
+const sanitizeCell = (value) => {
+  if (value === null || value === undefined) return '';
+
+  let sanitized = String(value).trim();
+
+  // Remove null bytes (path traversal attempt)
+  sanitized = sanitized.replace(/\0/g, '');
+
+  // Check for CSV injection (formulas) - prefix with single quote to neutralize
+  if (SECURITY_CONFIG.DANGEROUS_FORMULA_PREFIXES.some(prefix => sanitized.startsWith(prefix))) {
+    sanitized = "'" + sanitized;
+  }
+
+  // Truncate to max length
+  if (sanitized.length > SECURITY_CONFIG.MAX_CELL_LENGTH) {
+    sanitized = sanitized.substring(0, SECURITY_CONFIG.MAX_CELL_LENGTH);
+  }
+
+  // Remove potentially dangerous HTML/Script content
+  sanitized = sanitized.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  sanitized = sanitized.replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
+  sanitized = sanitized.replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '');
+  sanitized = sanitized.replace(/<embed\b[^>]*>/gi, '');
+
+  return sanitized;
+};
+
+/**
+ * Validate an email address for format and security
+ * @param {string} email - The email to validate
+ * @returns {boolean} - True if valid and safe
+ */
+const validateEmail = (email) => {
+  if (!email) return false;
+
+  const emailStr = String(email).trim().toLowerCase();
+
+  // Basic email format validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(emailStr)) return false;
+
+  // Check for suspicious patterns that could indicate injection attempts
+  for (const pattern of SECURITY_CONFIG.SUSPICIOUS_EMAIL_PATTERNS) {
+    if (pattern.test(emailStr)) return false;
+  }
+
+  // Check for excessively long emails (potential buffer overflow attempt)
+  if (emailStr.length > 254) return false;
+
+  return true;
+};
+
+/**
+ * Validate file before processing
+ * @param {File} file - The file to validate
+ * @returns {object} - { valid: boolean, reason?: string }
+ */
+const validateFile = (file) => {
+  // Check file size
+  if (file.size > SECURITY_CONFIG.MAX_FILE_SIZE) {
+    return {
+      valid: false,
+      reason: `File size exceeds ${SECURITY_CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB limit`
+    };
+  }
+
+  // Check file extension
+  const fileName = file.name.toLowerCase();
+  const hasValidExtension = SECURITY_CONFIG.ALLOWED_EXTENSIONS.some(ext =>
+    fileName.endsWith(ext)
+  );
+
+  if (!hasValidExtension) {
+    return {
+      valid: false,
+      reason: 'Invalid file type. Only CSV and Excel files (.csv, .xlsx, .xls) are allowed'
+    };
+  }
+
+  // Check for null bytes in filename (path traversal attempt)
+  if (file.name.includes('\0')) {
+    return {
+      valid: false,
+      reason: 'Invalid filename detected'
+    };
+  }
+
+  // Check for directory traversal attempts in filename
+  if (file.name.includes('..') || file.name.includes('/') || file.name.includes('\\')) {
+    return {
+      valid: false,
+      reason: 'Invalid filename detected'
+    };
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Validate file content for malicious patterns
+ * @param {array} data - The parsed file data
+ * @returns {object} - { valid: boolean, reason?: string }
+ */
+const validateFileContent = (data) => {
+  // Check row limit
+  if (data.length > SECURITY_CONFIG.MAX_ROWS) {
+    return {
+      valid: false,
+      reason: `File exceeds maximum row limit of ${SECURITY_CONFIG.MAX_ROWS.toLocaleString()} rows`
+    };
+  }
+
+  // Sample check for suspicious patterns (check first 100 rows for performance)
+  const sampleSize = Math.min(data.length, 100);
+  for (let i = 0; i < sampleSize; i++) {
+    const row = data[i];
+    if (!row) continue;
+
+    const rowString = JSON.stringify(row);
+    for (const pattern of SECURITY_CONFIG.SUSPICIOUS_PATTERNS) {
+      if (pattern.test(rowString)) {
+        return {
+          valid: false,
+          reason: 'File contains potentially malicious content'
+        };
+      }
+    }
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Sanitize a filename to prevent path traversal and other attacks
+ * @param {string} filename - The filename to sanitize
+ * @returns {string} - Sanitized filename
+ */
+const sanitizeFilename = (filename) => {
+  if (!filename) return 'unnamed_file';
+
+  let sanitized = String(filename);
+
+  // Remove directory traversal attempts
+  sanitized = sanitized.replace(/\.\./g, '');
+
+  // Remove null bytes
+  sanitized = sanitized.replace(/\0/g, '');
+
+  // Remove path separators
+  sanitized = sanitized.replace(/[\/\\]/g, '');
+
+  // Keep only safe characters (alphanumeric, dots, underscores, hyphens)
+  sanitized = sanitized.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+  // Ensure it doesn't start with a dot (hidden file)
+  if (sanitized.startsWith('.')) {
+    sanitized = '_' + sanitized.substring(1);
+  }
+
+  // Ensure reasonable length
+  if (sanitized.length > 200) {
+    const ext = sanitized.split('.').pop();
+    sanitized = sanitized.substring(0, 195) + '.' + ext;
+  }
+
+  return sanitized || 'unnamed_file';
+};
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
 const EmailListCleaner = () => {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -137,20 +346,33 @@ const EmailListCleaner = () => {
     addNotification('Logged out successfully', 'info');
   };
 
-  // File processing functions
+  // File processing functions with security
   const processData = (rawData) => {
-    if (rawData.length === 0) return [];
+    if (rawData.length === 0) return { data: [], stats: { total: 0, valid: 0, invalid: 0, duplicates: 0, sanitized: 0 } };
 
-    const headers = rawData[0].map(h => String(h || '').toLowerCase().trim());
+    const headers = rawData[0].map(h => sanitizeCell(h).toLowerCase());
     const rows = rawData.slice(1);
 
     const processed = [];
     const seenEmails = new Set();
 
+    // Security statistics
+    let invalidEmails = 0;
+    let duplicates = 0;
+    let sanitizedCells = 0;
+
     rows.forEach(row => {
       const rowData = {};
       headers.forEach((header, index) => {
-        rowData[header] = row[index] || '';
+        const rawValue = row[index];
+        const sanitizedValue = sanitizeCell(rawValue);
+
+        // Track sanitization
+        if (rawValue && String(rawValue) !== sanitizedValue) {
+          sanitizedCells++;
+        }
+
+        rowData[header] = sanitizedValue;
       });
 
       let email = findEmail(rowData, headers);
@@ -160,8 +382,20 @@ const EmailListCleaner = () => {
       let name = findName(rowData, headers);
 
       if (!email) return;
-      email = String(email).toLowerCase().trim();
-      if (seenEmails.has(email)) return;
+
+      email = sanitizeCell(email).toLowerCase().trim();
+
+      // Security: Validate email
+      if (!validateEmail(email)) {
+        invalidEmails++;
+        return;
+      }
+
+      // Check for duplicates
+      if (seenEmails.has(email)) {
+        duplicates++;
+        return;
+      }
       seenEmails.add(email);
 
       if (name && !firstName && !lastName) {
@@ -172,16 +406,33 @@ const EmailListCleaner = () => {
 
       processed.push({
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        name: name || `${firstName} ${lastName}`.trim() || '',
+        name: sanitizeCell(name || `${firstName} ${lastName}`.trim()) || '',
         email_only: email,
-        first_name: firstName || '',
-        last_name: lastName || '',
+        first_name: sanitizeCell(firstName) || '',
+        last_name: sanitizeCell(lastName) || '',
         email: email,
-        company: company || ''
+        company: sanitizeCell(company) || ''
       });
     });
 
-    return processed;
+    // Log security actions (for debugging)
+    if (sanitizedCells > 0) {
+      console.log(`Security: Sanitized ${sanitizedCells} potentially dangerous cells`);
+    }
+    if (invalidEmails > 0) {
+      console.log(`Security: Blocked ${invalidEmails} invalid/suspicious emails`);
+    }
+
+    return {
+      data: processed,
+      stats: {
+        total: rows.length,
+        valid: processed.length,
+        invalid: invalidEmails,
+        duplicates: duplicates,
+        sanitized: sanitizedCells
+      }
+    };
   };
 
   const findEmail = (row, headers) => {
@@ -231,6 +482,21 @@ const EmailListCleaner = () => {
     const uploadedFile = e.target.files[0];
     if (!uploadedFile) return;
 
+    // Security: Check file count limit
+    if (files.length >= SECURITY_CONFIG.MAX_FILES) {
+      addNotification(`Maximum ${SECURITY_CONFIG.MAX_FILES} files allowed per session`, 'error');
+      e.target.value = '';
+      return;
+    }
+
+    // Security: Validate file before processing
+    const fileValidation = validateFile(uploadedFile);
+    if (!fileValidation.valid) {
+      addNotification(fileValidation.reason, 'error');
+      e.target.value = '';
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -239,16 +505,37 @@ const EmailListCleaner = () => {
       reader.onload = (event) => {
         try {
           const binaryStr = event.target.result;
-          const workbook = XLSX.read(binaryStr, { type: 'binary' });
+          const workbook = XLSX.read(binaryStr, {
+            type: 'binary',
+            // Security: Disable formula execution
+            cellFormula: false,
+            cellHTML: false,
+          });
+
           const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
           const rawData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
-          const processed = processData(rawData);
+          // Security: Validate file content
+          const contentValidation = validateFileContent(rawData);
+          if (!contentValidation.valid) {
+            addNotification(contentValidation.reason, 'error');
+            setLoading(false);
+            return;
+          }
+
+          const { data: processed, stats } = processData(rawData);
+
+          if (processed.length === 0) {
+            addNotification('No valid email addresses found in file', 'error');
+            setLoading(false);
+            return;
+          }
 
           const newFile = {
             id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            name: uploadedFile.name,
+            name: sanitizeFilename(uploadedFile.name),
             data: processed,
+            stats: stats,
             columns: [
               { id: 'name', label: 'Name', enabled: true },
               { id: 'email_only', label: 'Email Only', enabled: true },
@@ -262,12 +549,27 @@ const EmailListCleaner = () => {
           setFiles([...files, newFile]);
           setActiveTab(newFile.id);
           setLoading(false);
-          addNotification(`File "${uploadedFile.name}" processed successfully!`, 'success');
+
+          // Build success message with stats
+          let message = `File processed! ${processed.length} valid contacts found.`;
+          if (stats.duplicates > 0) {
+            message += ` ${stats.duplicates} duplicates removed.`;
+          }
+          if (stats.invalid > 0) {
+            message += ` ${stats.invalid} invalid emails filtered.`;
+          }
+          addNotification(message, 'success');
+
         } catch (error) {
           console.error('Error processing file:', error);
-          addNotification('Error processing file. Please check the format.', 'error');
+          addNotification(error.message || 'Error processing file. Please check the format.', 'error');
           setLoading(false);
         }
+      };
+
+      reader.onerror = () => {
+        addNotification('Error reading file. Please try again.', 'error');
+        setLoading(false);
       };
 
       if (uploadedFile.name.endsWith('.csv')) {
@@ -280,15 +582,21 @@ const EmailListCleaner = () => {
       addNotification('Error reading file. Please try again.', 'error');
       setLoading(false);
     }
+
+    // Clear the input
+    e.target.value = '';
   };
 
   const handleEdit = (fileId, rowId, field, value) => {
+    // Security: Sanitize user input on edit
+    const sanitizedValue = sanitizeCell(value);
+
     setFiles(files.map(file => {
       if (file.id === fileId) {
         return {
           ...file,
           data: file.data.map(row =>
-            row.id === rowId ? { ...row, [field]: value } : row
+            row.id === rowId ? { ...row, [field]: sanitizedValue } : row
           )
         };
       }
@@ -409,10 +717,10 @@ const EmailListCleaner = () => {
   };
 
   const prepareDownloads = () => {
-    // Initialize file renames with default names
+    // Initialize file renames with sanitized default names
     const renames = {};
     files.forEach(file => {
-      renames[file.id] = `cleaned_${file.name}`;
+      renames[file.id] = sanitizeFilename(`cleaned_${file.name}`);
     });
     setFileRenames(renames);
     setShowFileRename(true);
@@ -434,7 +742,9 @@ const EmailListCleaner = () => {
       const exportData = file.data.map(row => {
         const exportRow = {};
         enabledColumns.forEach(col => {
-          exportRow[col.label] = row[col.id] || '';
+          // Security: Ensure CSV injection protection on export
+          let value = sanitizeCell(row[col.id] || '');
+          exportRow[col.label] = value;
         });
         return exportRow;
       });
@@ -445,7 +755,8 @@ const EmailListCleaner = () => {
         ...exportData.map(row =>
           headers.map(header => {
             const value = String(row[header] || '');
-            return value.includes(',') || value.includes('"')
+            // Properly escape for CSV (handle commas, quotes, and newlines)
+            return value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')
               ? `"${value.replace(/"/g, '""')}"`
               : value;
           }).join(',')
@@ -455,12 +766,17 @@ const EmailListCleaner = () => {
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
+
+      // Security: Sanitize the download filename
+      const downloadName = sanitizeFilename(fileRenames[file.id] || `cleaned_${file.name}`);
+
       link.setAttribute('href', url);
-      link.setAttribute('download', fileRenames[file.id] || `cleaned_${file.name}`);
+      link.setAttribute('download', downloadName);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     });
 
     setShowFileRename(false);
@@ -492,8 +808,8 @@ const EmailListCleaner = () => {
             <div
               key={notif.id}
               className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl backdrop-blur-sm animate-slide-in ${notif.type === 'success' ? 'bg-green-500 text-white' :
-                  notif.type === 'error' ? 'bg-red-500 text-white' :
-                    'bg-blue-500 text-white'
+                notif.type === 'error' ? 'bg-red-500 text-white' :
+                  'bg-blue-500 text-white'
                 }`}
             >
               <NotificationIcon type={notif.type} />
@@ -559,8 +875,8 @@ const EmailListCleaner = () => {
               <div className="bg-gradient-to-br from-purple-500 to-pink-500 w-14 h-14 rounded-xl flex items-center justify-center mb-6">
                 <Shield className="w-7 h-7 text-white" />
               </div>
-              <h3 className="text-xl font-bold text-white mb-3">100% Private</h3>
-              <p className="text-gray-400">Your data is processed in your browser. We never see or store your contacts.</p>
+              <h3 className="text-xl font-bold text-white mb-3">Enterprise Security</h3>
+              <p className="text-gray-400">CSV injection protection, XSS prevention, and secure processing. Your data is safe.</p>
             </div>
 
             <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-8">
@@ -568,7 +884,7 @@ const EmailListCleaner = () => {
                 <Mail className="w-7 h-7 text-white" />
               </div>
               <h3 className="text-xl font-bold text-white mb-3">Campaign Ready</h3>
-              <p className="text-gray-400">Duplicates removed, data formatted, ready for any email platform.</p>
+              <p className="text-gray-400">Duplicates removed, data sanitized, ready for any email platform.</p>
             </div>
           </div>
         </div>
@@ -659,7 +975,7 @@ const EmailListCleaner = () => {
     );
   }
 
-  // App Interface
+  // App Interface - Welcome Screen
   if (!showApp) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
@@ -669,8 +985,8 @@ const EmailListCleaner = () => {
             <div
               key={notif.id}
               className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl backdrop-blur-sm ${notif.type === 'success' ? 'bg-green-500 text-white' :
-                  notif.type === 'error' ? 'bg-red-500 text-white' :
-                    'bg-blue-500 text-white'
+                notif.type === 'error' ? 'bg-red-500 text-white' :
+                  'bg-blue-500 text-white'
                 }`}
             >
               <NotificationIcon type={notif.type} />
@@ -710,12 +1026,19 @@ const EmailListCleaner = () => {
               Start Processing
               <ArrowRight className="w-6 h-6" />
             </button>
+
+            {/* Security Badge */}
+            <div className="mt-12 inline-flex items-center gap-3 bg-white/10 backdrop-blur-sm border border-white/20 rounded-full px-6 py-3">
+              <Shield className="w-5 h-5 text-green-400" />
+              <span className="text-white text-sm">Enterprise-grade security enabled</span>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
+  // Main App Interface
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* Notifications */}
@@ -724,8 +1047,8 @@ const EmailListCleaner = () => {
           <div
             key={notif.id}
             className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl ${notif.type === 'success' ? 'bg-green-500 text-white' :
-                notif.type === 'error' ? 'bg-red-500 text-white' :
-                  'bg-blue-500 text-white'
+              notif.type === 'error' ? 'bg-red-500 text-white' :
+                'bg-blue-500 text-white'
               }`}
           >
             <NotificationIcon type={notif.type} />
@@ -740,17 +1063,23 @@ const EmailListCleaner = () => {
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-6">
               <h1 className="text-2xl font-bold text-gray-800">CSV Cleaner</h1>
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Shield className="w-4 h-4 text-green-500" />
+                <span>Secure</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
               <div className="text-sm text-gray-600">
                 <span className="font-medium">{user?.name}</span>
               </div>
+              <button
+                onClick={handleLogout}
+                className="text-gray-600 hover:text-gray-800 transition flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+              </button>
             </div>
-            <button
-              onClick={handleLogout}
-              className="text-gray-600 hover:text-gray-800 transition flex items-center gap-2"
-            >
-              <LogOut className="w-4 h-4" />
-              Logout
-            </button>
           </div>
         </div>
       </div>
@@ -800,7 +1129,10 @@ const EmailListCleaner = () => {
             <div className="flex flex-col items-center justify-center">
               <Upload className="w-16 h-16 text-indigo-500 mb-4" />
               <h2 className="text-xl font-semibold text-gray-800 mb-2">Upload Your First File</h2>
-              <p className="text-gray-600 mb-6 text-center">CSV or Excel files (.xlsx, .xls)</p>
+              <p className="text-gray-600 mb-2 text-center">CSV or Excel files (.csv, .xlsx, .xls)</p>
+              <p className="text-sm text-gray-500 mb-6 text-center">
+                Max {SECURITY_CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB • {SECURITY_CONFIG.MAX_ROWS.toLocaleString()} rows • {SECURITY_CONFIG.MAX_FILES} files per session
+              </p>
               <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-medium transition">
                 {loading ? 'Processing...' : 'Choose File'}
                 <input
@@ -834,7 +1166,20 @@ const EmailListCleaner = () => {
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h2 className="text-xl font-semibold text-gray-800">{activeFile.name}</h2>
-                <p className="text-sm text-gray-600">{activeFile.data.length} contacts • Duplicates removed</p>
+                <div className="flex items-center gap-3 text-sm text-gray-600">
+                  <span>{activeFile.data.length} contacts</span>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3 text-green-500" />
+                    Sanitized
+                  </span>
+                  {activeFile.stats?.duplicates > 0 && (
+                    <>
+                      <span>•</span>
+                      <span>{activeFile.stats.duplicates} duplicates removed</span>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="flex gap-3">
                 <button
@@ -1011,6 +1356,9 @@ const EmailListCleaner = () => {
           </div>
         )}
       </div>
+
+      {/* Bottom padding for fixed action bar */}
+      {files.length > 0 && <div className="h-24"></div>}
     </div>
   );
 };
