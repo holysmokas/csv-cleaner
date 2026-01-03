@@ -11,7 +11,8 @@ const Footer = ({ variant = 'light' }) => {
   return (
     <footer className={`py-8 mt-auto ${isDark ? 'bg-black/20' : 'bg-gray-100 border-t border-gray-200'}`}>
       <div className="max-w-6xl mx-auto px-6">
-        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+        {/* Main Footer Content */}
+        <div className="flex flex-col md:flex-row justify-between items-center gap-6 mb-6">
           {/* Brand */}
           <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
             © {new Date().getFullYear()} CSV Cleaner. All rights reserved.
@@ -49,6 +50,25 @@ const Footer = ({ variant = 'light' }) => {
           <div className={`flex items-center gap-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
             <Shield className="w-4 h-4" />
             <span>Secure & GDPR Compliant</span>
+          </div>
+        </div>
+
+        {/* Contact Section */}
+        <div className={`border-t ${isDark ? 'border-white/10' : 'border-gray-200'} pt-6`}>
+          <div className="flex flex-col sm:flex-row justify-center items-center gap-4">
+            <span className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+              Need help or have questions?
+            </span>
+            <a
+              href="mailto:contact@holysmokas.com"
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${isDark
+                  ? 'bg-white/10 text-white hover:bg-white/20 border border-white/20'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                }`}
+            >
+              <Mail className="w-4 h-4" />
+              contact@holysmokas.com
+            </a>
           </div>
         </div>
       </div>
