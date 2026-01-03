@@ -8,7 +8,8 @@ export async function onRequestPost(context) {
 
         return new Response(JSON.stringify({
             paid: session.payment_status === 'paid',
-            email: session.customer_details?.email
+            email: session.customer_details?.email,
+            fileCount: parseInt(session.metadata?.fileCount || '1')
         }), {
             headers: {
                 'Content-Type': 'application/json',

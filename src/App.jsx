@@ -1,70 +1,113 @@
-import React, { useState } from 'react';
-import { Upload, Download, Trash2, Plus, DollarSign, CheckCircle, Mail, Zap, Shield, ArrowRight, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 const EmailListCleaner = () => {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+  const [user, setUser] = useState(null);
+  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
+
+  // App state
   const [showApp, setShowApp] = useState(false);
-  const [file, setFile] = useState(null);
-  const [data, setData] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [activeTab, setActiveTab] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [paid, setPaid] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState('single');
+  const [paid, setPaid] = useState(false);
   const [showColumnEditor, setShowColumnEditor] = useState(false);
-  const [columns, setColumns] = useState([
-    { id: 'name', label: 'Name', enabled: true },
-    { id: 'email_only', label: 'Email Only', enabled: true },
-    { id: 'first_name', label: 'First Name', enabled: true },
-    { id: 'last_name', label: 'Last Name', enabled: true },
-    { id: 'email', label: 'Email', enabled: true },
-    { id: 'company', label: 'Company', enabled: true }
-  ]);
 
-  const pricingPlans = {
-    single: { name: 'Single File', price: 7.99, files: 1, popular: false },
-    small: { name: 'Small Pack', price: 29.99, files: 5, popular: true },
-    large: { name: 'Large Pack', price: 99.99, files: 20, popular: false }
-  };
+  // Check for existing session
+  useEffect(() => {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+      setIsAuthenticated(true);
+    }
 
-  // Process uploaded file
-  const handleFileUpload = async (e) => {
-    const uploadedFile = e.target.files[0];
-    if (!uploadedFile) return;
+    // Check for payment success
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('payment') === 'success') {
+      const sessionId = urlParams.get('session_id');
+      verifyPayment(sessionId);
+    }
+  }, []);
 
-    setFile(uploadedFile);
-    setLoading(true);
+  // Auth functions
+  const handleAuth = async (e) => {
+    e.preventDefault();
 
-    try {
-      const reader = new FileReader();
+    // Simple validation
+    if (!authForm.email || !authForm.password) {
+      alert('Please fill in all fields');
+      return;
+    }
 
-      reader.onload = (event) => {
-        try {
-          const binaryStr = event.target.result;
-          const workbook = XLSX.read(binaryStr, { type: 'binary' });
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rawData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+    if (authMode === 'register' && !authForm.name) {
+      alert('Please enter your name');
+      return;
+    }
 
-          const processed = processData(rawData);
-          setData(processed);
-          setLoading(false);
-        } catch (error) {
-          console.error('Error processing file:', error);
-          alert('Error processing file. Please check the format.');
-          setLoading(false);
-        }
+    // In production, this would call your API
+    // For now, we'll simulate with localStorage
+    if (authMode === 'register') {
+      const users = JSON.parse(localStorage.getItem('users') || '[]');
+
+      // Check if email exists
+      if (users.find(u => u.email === authForm.email)) {
+        alert('Email already registered');
+        return;
+      }
+
+      const newUser = {
+        id: Date.now(),
+        name: authForm.name,
+        email: authForm.email,
+        password: authForm.password, // In production, this would be hashed server-side
+        createdAt: new Date().toISOString()
       };
 
-      if (uploadedFile.name.endsWith('.csv')) {
-        reader.readAsText(uploadedFile);
-      } else {
-        reader.readAsBinaryString(uploadedFile);
+      users.push(newUser);
+      localStorage.setItem('users', JSON.stringify(users));
+
+      const userSession = { id: newUser.id, name: newUser.name, email: newUser.email };
+      localStorage.setItem('user', JSON.stringify(userSession));
+      setUser(userSession);
+      setIsAuthenticated(true);
+      setShowAuth(false);
+      setAuthForm({ email: '', password: '', name: '' });
+    } else {
+      // Login
+      const users = JSON.parse(localStorage.getItem('users') || '[]');
+      const foundUser = users.find(u => u.email === authForm.email && u.password === authForm.password);
+
+      if (!foundUser) {
+        alert('Invalid email or password');
+        return;
       }
-    } catch (error) {
-      console.error('Error reading file:', error);
-      setLoading(false);
+
+      const userSession = { id: foundUser.id, name: foundUser.name, email: foundUser.email };
+      localStorage.setItem('user', JSON.stringify(userSession));
+      setUser(userSession);
+      setIsAuthenticated(true);
+      setShowAuth(false);
+      setAuthForm({ email: '', password: '', name: '' });
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('user');
+    setUser(null);
+    setIsAuthenticated(false);
+    setShowApp(false);
+    setFiles([]);
+    setActiveTab(null);
+    setPaid(false);
+  };
+
+  // File processing functions
   const processData = (rawData) => {
     if (rawData.length === 0) return [];
 
@@ -76,7 +119,6 @@ const EmailListCleaner = () => {
 
     rows.forEach(row => {
       const rowData = {};
-
       headers.forEach((header, index) => {
         rowData[header] = row[index] || '';
       });
@@ -88,9 +130,7 @@ const EmailListCleaner = () => {
       let name = findName(rowData, headers);
 
       if (!email) return;
-
       email = String(email).toLowerCase().trim();
-
       if (seenEmails.has(email)) return;
       seenEmails.add(email);
 
@@ -157,66 +197,128 @@ const EmailListCleaner = () => {
     return '';
   };
 
-  const handleEdit = (id, field, value) => {
-    setData(data.map(row =>
-      row.id === id ? { ...row, [field]: value } : row
-    ));
-  };
+  const handleFileUpload = async (e) => {
+    const uploadedFile = e.target.files[0];
+    if (!uploadedFile) return;
 
-  const handleDelete = (id) => {
-    setData(data.filter(row => row.id !== id));
-  };
+    setLoading(true);
 
-  const handleAddRow = () => {
-    const newRow = { id: Date.now() };
-    columns.forEach(col => {
-      newRow[col.id] = '';
-    });
-    setData([...data, newRow]);
-  };
+    try {
+      const reader = new FileReader();
 
-  const addColumn = () => {
-    const newColumnName = prompt('Enter new column name:');
-    if (newColumnName && newColumnName.trim()) {
-      const columnId = newColumnName.toLowerCase().replace(/\s+/g, '_');
-      setColumns([...columns, {
-        id: columnId,
-        label: newColumnName.trim(),
-        enabled: true
-      }]);
-      // Add empty value for this column to all existing rows
-      setData(data.map(row => ({ ...row, [columnId]: '' })));
+      reader.onload = (event) => {
+        try {
+          const binaryStr = event.target.result;
+          const workbook = XLSX.read(binaryStr, { type: 'binary' });
+          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rawData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+
+          const processed = processData(rawData);
+
+          const newFile = {
+            id: Date.now(),
+            name: uploadedFile.name,
+            data: processed,
+            columns: [
+              { id: 'name', label: 'Name', enabled: true },
+              { id: 'email_only', label: 'Email Only', enabled: true },
+              { id: 'first_name', label: 'First Name', enabled: true },
+              { id: 'last_name', label: 'Last Name', enabled: true },
+              { id: 'email', label: 'Email', enabled: true },
+              { id: 'company', label: 'Company', enabled: true }
+            ]
+          };
+
+          setFiles([...files, newFile]);
+          setActiveTab(newFile.id);
+          setLoading(false);
+        } catch (error) {
+          console.error('Error processing file:', error);
+          alert('Error processing file. Please check the format.');
+          setLoading(false);
+        }
+      };
+
+      if (uploadedFile.name.endsWith('.csv')) {
+        reader.readAsText(uploadedFile);
+      } else {
+        reader.readAsBinaryString(uploadedFile);
+      }
+    } catch (error) {
+      console.error('Error reading file:', error);
+      setLoading(false);
     }
   };
 
-  const removeColumn = (columnId) => {
-    setColumns(columns.filter(col => col.id !== columnId));
+  const handleEdit = (fileId, rowId, field, value) => {
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        return {
+          ...file,
+          data: file.data.map(row =>
+            row.id === rowId ? { ...row, [field]: value } : row
+          )
+        };
+      }
+      return file;
+    }));
   };
 
-  const renameColumn = (columnId, newLabel) => {
-    setColumns(columns.map(col =>
-      col.id === columnId ? { ...col, label: newLabel } : col
-    ));
+  const handleDelete = (fileId, rowId) => {
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        return {
+          ...file,
+          data: file.data.filter(row => row.id !== rowId)
+        };
+      }
+      return file;
+    }));
   };
 
-  const toggleColumn = (columnId) => {
-    setColumns(columns.map(col =>
-      col.id === columnId ? { ...col, enabled: !col.enabled } : col
-    ));
+  const handleAddRow = (fileId) => {
+    setFiles(files.map(file => {
+      if (file.id === fileId) {
+        const newRow = { id: Date.now() };
+        file.columns.forEach(col => {
+          newRow[col.id] = '';
+        });
+        return {
+          ...file,
+          data: [...file.data, newRow]
+        };
+      }
+      return file;
+    }));
   };
 
-  const getEnabledColumns = () => columns.filter(col => col.enabled);
+  const removeTab = (fileId) => {
+    const updatedFiles = files.filter(f => f.id !== fileId);
+    setFiles(updatedFiles);
 
-  const handlePayment = () => {
+    if (activeTab === fileId && updatedFiles.length > 0) {
+      setActiveTab(updatedFiles[0].id);
+    } else if (updatedFiles.length === 0) {
+      setActiveTab(null);
+    }
+  };
+
+  const createNewTab = () => {
+    document.getElementById('file-upload').click();
+  };
+
+  const handlePayment = async () => {
     setShowPayment(true);
   };
 
   const processPayment = async () => {
     try {
-      const response = await fetch('/api/create-checkout', {
+      const fileCount = files.length;
+
+      const response = await fetch('/api/create-download-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: selectedPlan })
+        body: JSON.stringify({ fileCount })
       });
 
       const { url, error } = await response.json();
@@ -226,7 +328,6 @@ const EmailListCleaner = () => {
         return;
       }
 
-      // Redirect to Stripe Checkout
       window.location.href = url;
     } catch (error) {
       console.error('Payment error:', error);
@@ -234,56 +335,87 @@ const EmailListCleaner = () => {
     }
   };
 
-  const handleDownload = () => {
+  const verifyPayment = async (sessionId) => {
+    try {
+      const response = await fetch('/api/verify-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+
+      const { paid: paymentVerified } = await response.json();
+
+      if (paymentVerified) {
+        setPaid(true);
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch (error) {
+      console.error('Verification error:', error);
+    }
+  };
+
+  const handleDownloadAll = () => {
     if (!paid) {
       handlePayment();
       return;
     }
 
-    const enabledColumns = getEnabledColumns();
-    const exportData = data.map(row => {
-      const exportRow = {};
-      enabledColumns.forEach(col => {
-        exportRow[col.label] = row[col.id] || '';
+    files.forEach(file => {
+      const enabledColumns = file.columns.filter(col => col.enabled);
+      const exportData = file.data.map(row => {
+        const exportRow = {};
+        enabledColumns.forEach(col => {
+          exportRow[col.label] = row[col.id] || '';
+        });
+        return exportRow;
       });
-      return exportRow;
+
+      const headers = enabledColumns.map(col => col.label);
+      const csvContent = [
+        headers.join(','),
+        ...exportData.map(row =>
+          headers.map(header => {
+            const value = String(row[header] || '');
+            return value.includes(',') || value.includes('"')
+              ? `"${value.replace(/"/g, '""')}"`
+              : value;
+          }).join(',')
+        )
+      ].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', `cleaned_${file.name}`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     });
-
-    const headers = enabledColumns.map(col => col.label);
-    const csvContent = [
-      headers.join(','),
-      ...exportData.map(row =>
-        headers.map(header => {
-          const value = String(row[header] || '');
-          return value.includes(',') || value.includes('"')
-            ? `"${value.replace(/"/g, '""')}"`
-            : value;
-        }).join(',')
-      )
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', 'cleaned_email_list.csv');
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
-  const resetApp = () => {
-    setData([]);
-    setFile(null);
-    setPaid(false);
-    setShowApp(false);
-  };
+  const activeFile = files.find(f => f.id === activeTab);
+  const totalPrice = (files.length * 5.99).toFixed(2);
 
   // Landing Page
-  if (!showApp) {
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+        {/* Header with Auth */}
+        <div className="container mx-auto px-6 py-6">
+          <div className="flex justify-between items-center">
+            <div className="text-white text-2xl font-bold">EmailCleaner</div>
+            <button
+              onClick={() => { setShowAuth(true); setAuthMode('login'); }}
+              className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 rounded-full font-medium backdrop-blur-sm border border-white/20 transition"
+            >
+              Sign In
+            </button>
+          </div>
+        </div>
+
         {/* Hero Section */}
         <div className="container mx-auto px-6 py-20">
           <div className="text-center mb-16">
@@ -300,28 +432,28 @@ const EmailListCleaner = () => {
             </h1>
 
             <p className="text-xl text-gray-300 mb-12 max-w-2xl mx-auto">
-              Upload your CSV or Excel file and instantly get perfectly formatted contacts. No account needed. Pay only when you download.
+              Process multiple files at once. $5.99 per file. No subscriptions. See results before you pay.
             </p>
 
             <button
-              onClick={() => setShowApp(true)}
+              onClick={() => { setShowAuth(true); setAuthMode('register'); }}
               className="bg-gradient-to-r from-yellow-400 to-pink-500 hover:from-yellow-500 hover:to-pink-600 text-white px-12 py-5 rounded-full text-xl font-bold shadow-2xl transform hover:scale-105 transition inline-flex items-center gap-3"
             >
-              Start Cleaning Now
+              Get Started Free
               <ArrowRight className="w-6 h-6" />
             </button>
 
-            <p className="text-gray-400 mt-6">No signup required • See results before you pay</p>
+            <p className="text-gray-400 mt-6">First file free • Pay only when you download</p>
           </div>
 
           {/* Features */}
-          <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto mb-20">
+          <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
             <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-8">
               <div className="bg-gradient-to-br from-blue-500 to-cyan-500 w-14 h-14 rounded-xl flex items-center justify-center mb-6">
-                <Zap className="w-7 h-7 text-white" />
+                <FileText className="w-7 h-7 text-white" />
               </div>
-              <h3 className="text-xl font-bold text-white mb-3">Instant Processing</h3>
-              <p className="text-gray-400">Upload your file and see cleaned results in seconds. No waiting, no servers, all in your browser.</p>
+              <h3 className="text-xl font-bold text-white mb-3">Multi-File Processing</h3>
+              <p className="text-gray-400">Open multiple tabs, process all your files at once. Pay for what you use.</p>
             </div>
 
             <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-8">
@@ -329,7 +461,7 @@ const EmailListCleaner = () => {
                 <Shield className="w-7 h-7 text-white" />
               </div>
               <h3 className="text-xl font-bold text-white mb-3">100% Private</h3>
-              <p className="text-gray-400">Your data never leaves your browser. We don't store anything. Complete privacy guaranteed.</p>
+              <p className="text-gray-400">Your data is processed in your browser. We never see or store your contacts.</p>
             </div>
 
             <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-8">
@@ -337,67 +469,119 @@ const EmailListCleaner = () => {
                 <Mail className="w-7 h-7 text-white" />
               </div>
               <h3 className="text-xl font-bold text-white mb-3">Campaign Ready</h3>
-              <p className="text-gray-400">Get perfectly formatted columns for any email platform. Duplicates removed, data validated.</p>
+              <p className="text-gray-400">Duplicates removed, data formatted, ready for any email platform.</p>
             </div>
           </div>
+        </div>
 
-          {/* Pricing */}
-          <div className="max-w-5xl mx-auto">
-            <h2 className="text-4xl font-bold text-white text-center mb-4">Simple, Transparent Pricing</h2>
-            <p className="text-gray-300 text-center mb-12">Pay only for what you need. See your cleaned data before purchasing.</p>
+        {/* Auth Modal */}
+        {showAuth && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-8 max-w-md w-full">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-800">
+                  {authMode === 'login' ? 'Welcome Back' : 'Create Account'}
+                </h2>
+                <button onClick={() => setShowAuth(false)} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
 
-            <div className="grid md:grid-cols-3 gap-6">
-              {Object.entries(pricingPlans).map(([key, plan]) => (
-                <div
-                  key={key}
-                  className={`bg-white/5 backdrop-blur-sm border rounded-2xl p-8 ${plan.popular ? 'border-yellow-400 ring-2 ring-yellow-400/50 scale-105' : 'border-white/10'
-                    }`}
-                >
-                  {plan.popular && (
-                    <div className="bg-gradient-to-r from-yellow-400 to-orange-400 text-black text-sm font-bold px-4 py-1 rounded-full inline-block mb-4">
-                      MOST POPULAR
-                    </div>
-                  )}
-                  <h3 className="text-2xl font-bold text-white mb-2">{plan.name}</h3>
-                  <div className="mb-6">
-                    <span className="text-5xl font-bold text-white">${plan.price}</span>
-                    <span className="text-gray-400 ml-2">/ {plan.files} {plan.files === 1 ? 'file' : 'files'}</span>
+              <form onSubmit={handleAuth} className="space-y-4">
+                {authMode === 'register' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                    <input
+                      type="text"
+                      value={authForm.name}
+                      onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      placeholder="John Doe"
+                      required
+                    />
                   </div>
-                  {plan.files > 1 && (
-                    <p className="text-green-400 font-medium mb-6">
-                      ${(plan.price / plan.files).toFixed(2)} per file
-                    </p>
-                  )}
-                  <ul className="space-y-3 mb-8 text-gray-300">
-                    <li className="flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-400" />
-                      Remove duplicates
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-400" />
-                      Format columns
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-400" />
-                      Edit before download
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-400" />
-                      Instant processing
-                    </li>
-                  </ul>
+                )}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                  <input
+                    type="email"
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="you@example.com"
+                    required
+                  />
                 </div>
-              ))}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+                  <input
+                    type="password"
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-lg font-medium transition"
+                >
+                  {authMode === 'login' ? 'Sign In' : 'Create Account'}
+                </button>
+              </form>
+
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
+                  className="text-indigo-600 hover:text-indigo-700 font-medium"
+                >
+                  {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // App Interface
+  if (!showApp) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+        <div className="container mx-auto px-6 py-6">
+          <div className="flex justify-between items-center mb-12">
+            <div className="text-white text-2xl font-bold">EmailCleaner</div>
+            <div className="flex items-center gap-4">
+              <div className="text-white flex items-center gap-2">
+                <User className="w-5 h-5" />
+                <span>{user?.name}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg font-medium backdrop-blur-sm border border-white/20 transition flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+              </button>
             </div>
           </div>
 
-          {/* CTA Bottom */}
-          <div className="text-center mt-20">
+          <div className="text-center max-w-3xl mx-auto">
+            <h1 className="text-5xl font-bold text-white mb-6">Ready to Clean Your Lists?</h1>
+            <p className="text-xl text-gray-300 mb-12">
+              Upload your first file and start processing. Add more files in tabs as you go.
+            </p>
+
             <button
               onClick={() => setShowApp(true)}
-              className="bg-white hover:bg-gray-100 text-purple-900 px-12 py-5 rounded-full text-xl font-bold shadow-2xl transform hover:scale-105 transition inline-flex items-center gap-3"
+              className="bg-gradient-to-r from-yellow-400 to-pink-500 hover:from-yellow-500 hover:to-pink-600 text-white px-12 py-5 rounded-full text-xl font-bold shadow-2xl transform hover:scale-105 transition inline-flex items-center gap-3"
             >
-              Try It Now - It's Free to Preview
+              Start Processing
               <ArrowRight className="w-6 h-6" />
             </button>
           </div>
@@ -406,36 +590,79 @@ const EmailListCleaner = () => {
     );
   }
 
-  // App Interface
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-800 mb-2">Email List Cleaner</h1>
-              <p className="text-gray-600">Upload • Clean • Edit • Download</p>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      {/* Header */}
+      <div className="bg-white shadow-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-6">
+              <h1 className="text-2xl font-bold text-gray-800">EmailCleaner</h1>
+              <div className="text-sm text-gray-600">
+                <span className="font-medium">{user?.name}</span>
+              </div>
             </div>
             <button
-              onClick={resetApp}
-              className="text-gray-600 hover:text-gray-800 transition"
+              onClick={handleLogout}
+              className="text-gray-600 hover:text-gray-800 transition flex items-center gap-2"
             >
-              <X className="w-6 h-6" />
+              <LogOut className="w-4 h-4" />
+              Logout
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto p-6">
+        {/* Tabs */}
+        {files.length > 0 && (
+          <div className="bg-white rounded-t-lg shadow-lg overflow-x-auto">
+            <div className="flex items-center border-b border-gray-200">
+              {files.map(file => (
+                <div
+                  key={file.id}
+                  className={`flex items-center gap-2 px-6 py-3 cursor-pointer border-r border-gray-200 min-w-max ${activeTab === file.id
+                      ? 'bg-indigo-50 border-b-2 border-indigo-600'
+                      : 'hover:bg-gray-50'
+                    }`}
+                  onClick={() => setActiveTab(file.id)}
+                >
+                  <FileText className="w-4 h-4 text-gray-600" />
+                  <span className="font-medium text-gray-800">
+                    {file.name.length > 20 ? file.name.substring(0, 20) + '...' : file.name}
+                  </span>
+                  <span className="text-xs text-gray-500">({file.data.length})</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removeTab(file.id); }}
+                    className="ml-2 text-gray-400 hover:text-red-600 transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+
+              <button
+                onClick={createNewTab}
+                className="flex items-center gap-2 px-6 py-3 text-indigo-600 hover:bg-indigo-50 font-medium transition min-w-max"
+              >
+                <Plus className="w-4 h-4" />
+                New File
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Upload Section */}
-        {data.length === 0 && (
+        {files.length === 0 && (
           <div className="bg-white rounded-lg shadow-lg p-12">
             <div className="flex flex-col items-center justify-center">
               <Upload className="w-16 h-16 text-indigo-500 mb-4" />
-              <h2 className="text-xl font-semibold text-gray-800 mb-2">Upload Your File</h2>
-              <p className="text-gray-600 mb-6 text-center">Support for CSV and Excel files (.xlsx, .xls)</p>
+              <h2 className="text-xl font-semibold text-gray-800 mb-2">Upload Your First File</h2>
+              <p className="text-gray-600 mb-6 text-center">CSV or Excel files (.xlsx, .xls)</p>
               <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-medium transition">
                 {loading ? 'Processing...' : 'Choose File'}
                 <input
+                  id="file-upload"
                   type="file"
                   accept=".csv,.xlsx,.xls"
                   onChange={handleFileUpload}
@@ -447,44 +674,33 @@ const EmailListCleaner = () => {
           </div>
         )}
 
+        {/* Hidden file input for new tabs */}
+        {files.length > 0 && (
+          <input
+            id="file-upload"
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            onChange={handleFileUpload}
+            className="hidden"
+            disabled={loading}
+          />
+        )}
+
         {/* Data Table */}
-        {data.length > 0 && (
-          <div className="bg-white rounded-lg shadow-lg p-6">
+        {activeFile && (
+          <div className="bg-white rounded-b-lg shadow-lg p-6">
             <div className="flex justify-between items-center mb-4">
               <div>
-                <h2 className="text-xl font-semibold text-gray-800">Your Cleaned Data</h2>
-                <p className="text-sm text-gray-600">{data.length} contacts • Duplicates removed</p>
+                <h2 className="text-xl font-semibold text-gray-800">{activeFile.name}</h2>
+                <p className="text-sm text-gray-600">{activeFile.data.length} contacts • Duplicates removed</p>
               </div>
               <div className="flex gap-3">
                 <button
-                  onClick={() => setShowColumnEditor(true)}
-                  className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium transition"
-                >
-                  <Mail className="w-4 h-4" />
-                  Customize Columns
-                </button>
-                <button
-                  onClick={handleAddRow}
+                  onClick={() => handleAddRow(activeFile.id)}
                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition"
                 >
                   <Plus className="w-4 h-4" />
                   Add Row
-                </button>
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium transition"
-                >
-                  {paid ? (
-                    <>
-                      <Download className="w-4 h-4" />
-                      Download CSV
-                    </>
-                  ) : (
-                    <>
-                      <DollarSign className="w-4 h-4" />
-                      Purchase & Download
-                    </>
-                  )}
                 </button>
               </div>
             </div>
@@ -493,7 +709,7 @@ const EmailListCleaner = () => {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b-2 border-gray-200">
                   <tr>
-                    {getEnabledColumns().map(col => (
+                    {activeFile.columns.filter(col => col.enabled).map(col => (
                       <th key={col.id} className="px-4 py-3 text-left font-semibold text-gray-700">
                         {col.label}
                       </th>
@@ -502,21 +718,21 @@ const EmailListCleaner = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {data.map((row) => (
+                  {activeFile.data.map((row) => (
                     <tr key={row.id} className="hover:bg-gray-50">
-                      {getEnabledColumns().map(col => (
+                      {activeFile.columns.filter(col => col.enabled).map(col => (
                         <td key={col.id} className="px-4 py-3">
                           <input
                             type={col.id.includes('email') ? 'email' : 'text'}
                             value={row[col.id] || ''}
-                            onChange={(e) => handleEdit(row.id, col.id, e.target.value)}
+                            onChange={(e) => handleEdit(activeFile.id, row.id, col.id, e.target.value)}
                             className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </td>
                       ))}
                       <td className="px-4 py-3 text-center">
                         <button
-                          onClick={() => handleDelete(row.id)}
+                          onClick={() => handleDelete(activeFile.id, row.id)}
                           className="text-red-600 hover:text-red-800 transition"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -530,54 +746,70 @@ const EmailListCleaner = () => {
           </div>
         )}
 
+        {/* Bottom Action Bar */}
+        {files.length > 0 && (
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg">
+            <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+              <div className="flex items-center gap-4">
+                <div className="text-gray-800">
+                  <span className="font-bold text-2xl">{files.length}</span>
+                  <span className="text-gray-600 ml-2">file{files.length > 1 ? 's' : ''} ready</span>
+                </div>
+                <div className="h-8 w-px bg-gray-300"></div>
+                <div className="text-gray-800">
+                  <span className="text-sm text-gray-600">Total:</span>
+                  <span className="font-bold text-2xl ml-2">${totalPrice}</span>
+                </div>
+              </div>
+
+              <button
+                onClick={handleDownloadAll}
+                className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-8 py-3 rounded-lg font-bold text-lg shadow-lg transition"
+              >
+                {paid ? (
+                  <>
+                    <Download className="w-5 h-5" />
+                    Download All Files
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-5 h-5" />
+                    Pay & Download All
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Payment Modal */}
         {showPayment && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg p-8 max-w-md w-full">
-              <h3 className="text-2xl font-bold text-gray-800 mb-6">Choose Your Plan</h3>
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-8 max-w-md w-full">
+              <h3 className="text-2xl font-bold text-gray-800 mb-6">Ready to Download?</h3>
 
-              <div className="space-y-4 mb-6">
-                {Object.entries(pricingPlans).map(([key, plan]) => (
-                  <label
-                    key={key}
-                    className={`block border-2 rounded-lg p-4 cursor-pointer transition ${selectedPlan === key
-                      ? 'border-indigo-600 bg-indigo-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                  >
-                    <input
-                      type="radio"
-                      name="plan"
-                      value={key}
-                      checked={selectedPlan === key}
-                      onChange={(e) => setSelectedPlan(e.target.value)}
-                      className="sr-only"
-                    />
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <div className="font-bold text-gray-800">{plan.name}</div>
-                        <div className="text-sm text-gray-600">{plan.files} {plan.files === 1 ? 'file' : 'files'}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-2xl font-bold text-indigo-600">${plan.price}</div>
-                        {plan.files > 1 && (
-                          <div className="text-xs text-green-600">${(plan.price / plan.files).toFixed(2)} per file</div>
-                        )}
-                      </div>
-                    </div>
-                    {plan.popular && (
-                      <div className="mt-2 text-xs font-semibold text-indigo-600">MOST POPULAR</div>
-                    )}
-                  </label>
-                ))}
+              <div className="bg-indigo-50 rounded-lg p-6 mb-6">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-gray-600">Files to process:</span>
+                  <span className="font-bold text-gray-800">{files.length}</span>
+                </div>
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-gray-600">Price per file:</span>
+                  <span className="font-bold text-gray-800">$5.99</span>
+                </div>
+                <div className="border-t border-indigo-200 my-3"></div>
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-semibold text-gray-800">Total:</span>
+                  <span className="text-3xl font-bold text-indigo-600">${totalPrice}</span>
+                </div>
               </div>
 
               <div className="space-y-3">
                 <button
                   onClick={processPayment}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-lg font-medium transition"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-4 rounded-lg font-bold text-lg transition"
                 >
-                  Pay ${pricingPlans[selectedPlan].price} with Stripe
+                  Pay ${totalPrice} with Stripe
                 </button>
                 <button
                   onClick={() => setShowPayment(false)}
@@ -586,106 +818,21 @@ const EmailListCleaner = () => {
                   Cancel
                 </button>
               </div>
+
               <p className="text-xs text-gray-500 text-center mt-4">
-                Secure payment processed by Stripe
+                🔒 Secure payment processed by Stripe
               </p>
             </div>
           </div>
         )}
 
-        {/* Column Editor Modal */}
-        {showColumnEditor && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-bold text-gray-800">Customize Columns</h3>
-                <button
-                  onClick={() => setShowColumnEditor(false)}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <X className="w-6 h-6" />
-                </button>
-              </div>
-
-              <p className="text-gray-600 mb-6">
-                Toggle, rename, or remove columns. Only enabled columns will appear in your downloaded CSV.
-              </p>
-
-              <div className="space-y-3 mb-6">
-                {columns.map(col => (
-                  <div
-                    key={col.id}
-                    className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg border border-gray-200"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={col.enabled}
-                      onChange={() => toggleColumn(col.id)}
-                      className="w-5 h-5 text-indigo-600 rounded focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <input
-                      type="text"
-                      value={col.label}
-                      onChange={(e) => renameColumn(col.id, e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      placeholder="Column name"
-                    />
-                    <button
-                      onClick={() => removeColumn(col.id)}
-                      className="text-red-600 hover:text-red-800 transition p-2"
-                      title="Remove column"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={addColumn}
-                className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-medium transition mb-4"
-              >
-                <Plus className="w-5 h-5" />
-                Add New Column
-              </button>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowColumnEditor(false)}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-lg font-medium transition"
-                >
-                  Done
-                </button>
-              </div>
-
-              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  <strong>Tip:</strong> You can add custom columns for things like phone numbers, addresses, tags, or any other data your email platform needs!
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Success Message */}
+        {/* Success Toast */}
         {paid && (
-          <div className="fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 z-50">
-            <CheckCircle className="w-5 h-5" />
-            Payment Successful!
-          </div>
-        )}
-
-        {/* Upsell Banner (after download) */}
-        {paid && (
-          <div className="mt-6 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg shadow-lg p-6 text-white">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold mb-2">Ready to send these emails?</h3>
-                <p className="text-purple-100">Try our mass email platform - send to thousands with high deliverability</p>
-              </div>
-              <button className="bg-white text-purple-600 px-6 py-3 rounded-lg font-bold hover:bg-gray-100 transition whitespace-nowrap">
-                Learn More →
-              </button>
+          <div className="fixed bottom-20 right-6 bg-green-500 text-white px-6 py-4 rounded-lg shadow-2xl flex items-center gap-3 z-50 animate-bounce">
+            <CheckCircle className="w-6 h-6" />
+            <div>
+              <div className="font-bold">Payment Successful!</div>
+              <div className="text-sm">Your files are ready to download</div>
             </div>
           </div>
         )}
