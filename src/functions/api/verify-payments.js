@@ -10,9 +10,13 @@ export async function onRequestPost(context) {
             paid: session.payment_status === 'paid',
             email: session.customer_details?.email
         }), {
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
         });
     } catch (error) {
+        console.error('Verification error:', error);
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
