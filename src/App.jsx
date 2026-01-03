@@ -1,7 +1,60 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText, AlertCircle, Check, Info, Edit2, Settings, Eye, EyeOff, Columns } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
+
+// Footer Component
+const Footer = ({ variant = 'light' }) => {
+  const isDark = variant === 'dark';
+
+  return (
+    <footer className={`py-8 mt-auto ${isDark ? 'bg-black/20' : 'bg-gray-100 border-t border-gray-200'}`}>
+      <div className="max-w-6xl mx-auto px-6">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+          {/* Brand */}
+          <div className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+            © {new Date().getFullYear()} CSV Cleaner. All rights reserved.
+          </div>
+
+          {/* Legal Links */}
+          <div className="flex flex-wrap justify-center gap-6">
+            <Link
+              to="/privacy"
+              className={`text-sm transition ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            >
+              Privacy Policy
+            </Link>
+            <Link
+              to="/terms"
+              className={`text-sm transition ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            >
+              Terms of Service
+            </Link>
+            <Link
+              to="/acceptable-use"
+              className={`text-sm transition ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            >
+              Acceptable Use
+            </Link>
+            <Link
+              to="/cookies"
+              className={`text-sm transition ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            >
+              Cookie Policy
+            </Link>
+          </div>
+
+          {/* Security Badge */}
+          <div className={`flex items-center gap-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+            <Shield className="w-4 h-4" />
+            <span>Secure & GDPR Compliant</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  );
+};
 
 // ============================================================================
 // SECURITY CONFIGURATION
@@ -1178,7 +1231,7 @@ const EmailListCleaner = () => {
   // Landing Page
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 flex flex-col">
         {/* Notifications */}
         <div className="fixed top-4 right-4 z-50 space-y-2">
           {notifications.map(notif => (
@@ -1265,6 +1318,9 @@ const EmailListCleaner = () => {
             </div>
           </div>
         </div>
+
+        {/* Footer */}
+        <Footer variant="dark" />
 
         {/* Auth Modal */}
         {showAuth && (
@@ -1355,7 +1411,7 @@ const EmailListCleaner = () => {
   // App Interface - Welcome Screen
   if (!showApp) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 flex flex-col">
         {/* Notifications */}
         <div className="fixed top-4 right-4 z-50 space-y-2">
           {notifications.map(notif => (
@@ -1411,13 +1467,16 @@ const EmailListCleaner = () => {
             </div>
           </div>
         </div>
+
+        {/* Footer */}
+        <Footer variant="dark" />
       </div>
     );
   }
 
   // Main App Interface
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       {/* Notifications */}
       <div className="fixed top-4 right-4 z-50 space-y-2">
         {notifications.map(notif => (
@@ -1893,6 +1952,9 @@ const EmailListCleaner = () => {
 
       {/* Bottom padding for fixed action bar */}
       {files.length > 0 && <div className="h-24"></div>}
+
+      {/* Footer - only show when no files (action bar covers it otherwise) */}
+      {files.length === 0 && <Footer variant="light" />}
     </div>
   );
 };
