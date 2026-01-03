@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText } from 'lucide-react';
+import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText, AlertCircle, Check, Info } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 
@@ -20,6 +20,22 @@ const EmailListCleaner = () => {
   const [loading, setLoading] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
   const [paid, setPaid] = useState(false);
+
+  // Notification state
+  const [notifications, setNotifications] = useState([]);
+
+  // File rename state
+  const [showFileRename, setShowFileRename] = useState(false);
+  const [fileRenames, setFileRenames] = useState({});
+
+  // Add notification
+  const addNotification = (message, type = 'info') => {
+    const id = Date.now();
+    setNotifications(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 5000);
+  };
 
   // Check for existing session on mount
   useEffect(() => {
@@ -76,6 +92,7 @@ const EmailListCleaner = () => {
           email: authForm.email,
           password: authForm.password,
           options: {
+            emailRedirectTo: `${window.location.origin}`,
             data: {
               name: authForm.name
             }
@@ -85,11 +102,10 @@ const EmailListCleaner = () => {
         if (error) throw error;
 
         if (data.user) {
-          // Check if email confirmation is required
           if (data.user.identities?.length === 0) {
             setAuthError('This email is already registered. Please sign in instead.');
           } else {
-            alert('Registration successful! Please check your email to confirm your account.');
+            addNotification('Registration successful! Please check your email to confirm your account.', 'success');
             setAuthMode('login');
           }
         }
@@ -103,6 +119,7 @@ const EmailListCleaner = () => {
 
         setShowAuth(false);
         setAuthForm({ email: '', password: '', name: '' });
+        addNotification('Welcome back!', 'success');
       }
     } catch (error) {
       setAuthError(error.message || 'Authentication failed');
@@ -117,6 +134,7 @@ const EmailListCleaner = () => {
     setFiles([]);
     setActiveTab(null);
     setPaid(false);
+    addNotification('Logged out successfully', 'info');
   };
 
   // File processing functions
@@ -244,9 +262,10 @@ const EmailListCleaner = () => {
           setFiles([...files, newFile]);
           setActiveTab(newFile.id);
           setLoading(false);
+          addNotification(`File "${uploadedFile.name}" processed successfully!`, 'success');
         } catch (error) {
           console.error('Error processing file:', error);
-          alert('Error processing file. Please check the format.');
+          addNotification('Error processing file. Please check the format.', 'error');
           setLoading(false);
         }
       };
@@ -258,6 +277,7 @@ const EmailListCleaner = () => {
       }
     } catch (error) {
       console.error('Error reading file:', error);
+      addNotification('Error reading file. Please try again.', 'error');
       setLoading(false);
     }
   };
@@ -333,17 +353,25 @@ const EmailListCleaner = () => {
         body: JSON.stringify({ fileCount })
       });
 
-      const { url, error } = await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-      if (error) {
-        alert('Payment failed: ' + error);
+      const data = await response.json();
+
+      if (data.error) {
+        addNotification('Payment failed: ' + data.error, 'error');
         return;
       }
 
-      window.location.href = url;
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error('No checkout URL received');
+      }
     } catch (error) {
       console.error('Payment error:', error);
-      alert('Payment failed. Please try again.');
+      addNotification('Payment processing failed. Please try again or contact support.', 'error');
     }
   };
 
@@ -355,15 +383,39 @@ const EmailListCleaner = () => {
         body: JSON.stringify({ session_id: sessionId })
       });
 
-      const { paid: paymentVerified } = await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-      if (paymentVerified) {
+      const data = await response.json();
+
+      if (data.paid) {
         setPaid(true);
         window.history.replaceState({}, document.title, window.location.pathname);
+        addNotification('Payment successful! Your files are ready to download.', 'success');
+
+        // Auto-open file rename dialog
+        setTimeout(() => {
+          prepareDownloads();
+        }, 1000);
+      } else {
+        console.error('Payment verification failed:', data.error);
+        addNotification('Payment verification failed. Please contact support.', 'error');
       }
     } catch (error) {
       console.error('Verification error:', error);
+      addNotification('Could not verify payment. Please contact support with your order details.', 'error');
     }
+  };
+
+  const prepareDownloads = () => {
+    // Initialize file renames with default names
+    const renames = {};
+    files.forEach(file => {
+      renames[file.id] = `cleaned_${file.name}`;
+    });
+    setFileRenames(renames);
+    setShowFileRename(true);
   };
 
   const handleDownloadAll = () => {
@@ -372,6 +424,11 @@ const EmailListCleaner = () => {
       return;
     }
 
+    // Show file rename dialog
+    prepareDownloads();
+  };
+
+  const executeDownloads = () => {
     files.forEach(file => {
       const enabledColumns = file.columns.filter(col => col.enabled);
       const exportData = file.data.map(row => {
@@ -399,21 +456,52 @@ const EmailListCleaner = () => {
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      link.setAttribute('download', `cleaned_${file.name}`);
+      link.setAttribute('download', fileRenames[file.id] || `cleaned_${file.name}`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     });
+
+    setShowFileRename(false);
+    addNotification(`Successfully downloaded ${files.length} file${files.length > 1 ? 's' : ''}!`, 'success');
   };
 
   const activeFile = files.find(f => f.id === activeTab);
   const totalPrice = (files.length * 5.99).toFixed(2);
 
+  // Notification Component
+  const NotificationIcon = ({ type }) => {
+    switch (type) {
+      case 'success':
+        return <CheckCircle className="w-5 h-5" />;
+      case 'error':
+        return <AlertCircle className="w-5 h-5" />;
+      default:
+        return <Info className="w-5 h-5" />;
+    }
+  };
+
   // Landing Page
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+        {/* Notifications */}
+        <div className="fixed top-4 right-4 z-50 space-y-2">
+          {notifications.map(notif => (
+            <div
+              key={notif.id}
+              className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl backdrop-blur-sm animate-slide-in ${notif.type === 'success' ? 'bg-green-500 text-white' :
+                  notif.type === 'error' ? 'bg-red-500 text-white' :
+                    'bg-blue-500 text-white'
+                }`}
+            >
+              <NotificationIcon type={notif.type} />
+              <span className="font-medium">{notif.message}</span>
+            </div>
+          ))}
+        </div>
+
         {/* Header with Auth */}
         <div className="container mx-auto px-6 py-6">
           <div className="flex justify-between items-center">
@@ -575,6 +663,22 @@ const EmailListCleaner = () => {
   if (!showApp) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900">
+        {/* Notifications */}
+        <div className="fixed top-4 right-4 z-50 space-y-2">
+          {notifications.map(notif => (
+            <div
+              key={notif.id}
+              className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl backdrop-blur-sm ${notif.type === 'success' ? 'bg-green-500 text-white' :
+                  notif.type === 'error' ? 'bg-red-500 text-white' :
+                    'bg-blue-500 text-white'
+                }`}
+            >
+              <NotificationIcon type={notif.type} />
+              <span className="font-medium">{notif.message}</span>
+            </div>
+          ))}
+        </div>
+
         <div className="container mx-auto px-6 py-6">
           <div className="flex justify-between items-center mb-12">
             <div className="text-white text-2xl font-bold">CSV Cleaner</div>
@@ -614,6 +718,22 @@ const EmailListCleaner = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      {/* Notifications */}
+      <div className="fixed top-4 right-4 z-50 space-y-2">
+        {notifications.map(notif => (
+          <div
+            key={notif.id}
+            className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl ${notif.type === 'success' ? 'bg-green-500 text-white' :
+                notif.type === 'error' ? 'bg-red-500 text-white' :
+                  'bg-blue-500 text-white'
+              }`}
+          >
+            <NotificationIcon type={notif.type} />
+            <span className="font-medium">{notif.message}</span>
+          </div>
+        ))}
+      </div>
+
       {/* Header */}
       <div className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6 py-4">
@@ -644,8 +764,8 @@ const EmailListCleaner = () => {
                 <div
                   key={file.id}
                   className={`flex items-center gap-2 px-6 py-3 cursor-pointer border-r border-gray-200 min-w-max ${activeTab === file.id
-                      ? 'bg-indigo-50 border-b-2 border-indigo-600'
-                      : 'hover:bg-gray-50'
+                    ? 'bg-indigo-50 border-b-2 border-indigo-600'
+                    : 'hover:bg-gray-50'
                     }`}
                   onClick={() => setActiveTab(file.id)}
                 >
@@ -848,13 +968,45 @@ const EmailListCleaner = () => {
           </div>
         )}
 
-        {/* Success Toast */}
-        {paid && (
-          <div className="fixed bottom-20 right-6 bg-green-500 text-white px-6 py-4 rounded-lg shadow-2xl flex items-center gap-3 z-50 animate-bounce">
-            <CheckCircle className="w-6 h-6" />
-            <div>
-              <div className="font-bold">Payment Successful!</div>
-              <div className="text-sm">Your files are ready to download</div>
+        {/* File Rename Modal */}
+        {showFileRename && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-8 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+              <h3 className="text-2xl font-bold text-gray-800 mb-2">Name Your Files</h3>
+              <p className="text-gray-600 mb-6">Customize file names before downloading</p>
+
+              <div className="space-y-4 mb-6">
+                {files.map(file => (
+                  <div key={file.id}>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {file.name} ({file.data.length} contacts)
+                    </label>
+                    <input
+                      type="text"
+                      value={fileRenames[file.id] || ''}
+                      onChange={(e) => setFileRenames({ ...fileRenames, [file.id]: e.target.value })}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      placeholder="Enter file name..."
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={executeDownloads}
+                  className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-3 rounded-lg font-bold transition flex items-center justify-center gap-2"
+                >
+                  <Download className="w-5 h-5" />
+                  Download All
+                </button>
+                <button
+                  onClick={() => setShowFileRename(false)}
+                  className="px-6 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-medium transition"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         )}
