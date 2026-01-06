@@ -503,6 +503,22 @@ const EmailListCleaner = () => {
           if (data.user.identities?.length === 0) {
             setAuthError('This email is already registered. Please sign in instead.');
           } else {
+            // Notify about new signup (email + Google Sheets)
+            try {
+              await fetch('/api/user-signup-webhook', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: authForm.name,
+                  email: authForm.email,
+                  timestamp: new Date().toISOString()
+                })
+              });
+            } catch (webhookError) {
+              // Don't block signup if webhook fails
+              console.error('Signup webhook error:', webhookError);
+            }
+
             addNotification('Registration successful! Please check your email to confirm your account.', 'success');
             setAuthMode('login');
           }
