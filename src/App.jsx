@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Upload, Download, Trash2, Plus, X, Mail, Zap, Shield, ArrowRight, CheckCircle, LogOut, User, FileText, AlertCircle, Check, Info, Edit2, Settings, Eye, EyeOff, Columns } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import { supabase } from './lib/supabase';
+import ExcelJS from 'exceljs';
+import {
+  auth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updateProfile
+} from './lib/firebase';
 
 // Footer Component
 const Footer = ({ variant = 'light' }) => {
@@ -62,8 +69,8 @@ const Footer = ({ variant = 'light' }) => {
             <a
               href="mailto:contact@holysmokas.com"
               className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${isDark
-                  ? 'bg-white/10 text-white hover:bg-white/20 border border-white/20'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                ? 'bg-white/10 text-white hover:bg-white/20 border border-white/20'
+                : 'bg-indigo-600 text-white hover:bg-indigo-700'
                 }`}
             >
               <Mail className="w-4 h-4" />
@@ -337,6 +344,71 @@ const extractNameFromEmail = (email) => {
 };
 
 /**
+ * Parse CSV text into array of arrays
+ * Handles quoted fields, commas within quotes, and various line endings
+ * @param {string} text - Raw CSV text
+ * @returns {Array<Array>} - Parsed data as array of arrays
+ */
+const parseCSV = (text) => {
+  const rows = [];
+  let currentRow = [];
+  let currentField = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (insideQuotes) {
+      if (char === '"') {
+        if (nextChar === '"') {
+          // Escaped quote
+          currentField += '"';
+          i++; // Skip next quote
+        } else {
+          // End of quoted field
+          insideQuotes = false;
+        }
+      } else {
+        currentField += char;
+      }
+    } else {
+      if (char === '"') {
+        insideQuotes = true;
+      } else if (char === ',') {
+        currentRow.push(currentField);
+        currentField = '';
+      } else if (char === '\r') {
+        // Handle \r\n or just \r
+        if (nextChar === '\n') {
+          i++; // Skip \n
+        }
+        currentRow.push(currentField);
+        rows.push(currentRow);
+        currentRow = [];
+        currentField = '';
+      } else if (char === '\n') {
+        currentRow.push(currentField);
+        rows.push(currentRow);
+        currentRow = [];
+        currentField = '';
+      } else {
+        currentField += char;
+      }
+    }
+  }
+
+  // Don't forget the last field and row
+  if (currentField || currentRow.length > 0) {
+    currentRow.push(currentField);
+    rows.push(currentRow);
+  }
+
+  // Filter out completely empty rows
+  return rows.filter(row => row.some(cell => cell.trim() !== ''));
+};
+
+/**
  * Sanitize a filename to prevent path traversal and other attacks
  * @param {string} filename - The filename to sanitize
  * @returns {string} - Sanitized filename
@@ -416,15 +488,13 @@ const EmailListCleaner = () => {
 
   // Check for existing session on mount
   useEffect(() => {
-    checkUser();
-
-    // Listen for auth changes
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user) {
+    // Listen for Firebase auth changes
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
         setUser({
-          id: session.user.id,
-          email: session.user.email,
-          name: session.user.user_metadata?.name || session.user.email.split('@')[0]
+          id: firebaseUser.uid,
+          email: firebaseUser.email,
+          name: firebaseUser.displayName || firebaseUser.email.split('@')[0]
         });
         setIsAuthenticated(true);
       } else {
@@ -461,22 +531,8 @@ const EmailListCleaner = () => {
       verifyPaymentAndDownload(sessionId, restoredFiles);
     }
 
-    return () => {
-      authListener?.subscription?.unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
-
-  const checkUser = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      setUser({
-        id: session.user.id,
-        email: session.user.email,
-        name: session.user.user_metadata?.name || session.user.email.split('@')[0]
-      });
-      setIsAuthenticated(true);
-    }
-  };
 
   // Auth functions
   const handleAuth = async (e) => {
@@ -486,64 +542,89 @@ const EmailListCleaner = () => {
 
     try {
       if (authMode === 'register') {
-        const { data, error } = await supabase.auth.signUp({
-          email: authForm.email,
-          password: authForm.password,
-          options: {
-            emailRedirectTo: `${window.location.origin}`,
-            data: {
-              name: authForm.name
-            }
-          }
-        });
+        // Create user with Firebase
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          authForm.email,
+          authForm.password
+        );
 
-        if (error) throw error;
-
-        if (data.user) {
-          if (data.user.identities?.length === 0) {
-            setAuthError('This email is already registered. Please sign in instead.');
-          } else {
-            // Notify about new signup (email + Google Sheets)
-            try {
-              await fetch('/api/user-signup-webhook', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  name: authForm.name,
-                  email: authForm.email,
-                  timestamp: new Date().toISOString()
-                })
-              });
-            } catch (webhookError) {
-              // Don't block signup if webhook fails
-              console.error('Signup webhook error:', webhookError);
-            }
-
-            addNotification('Registration successful! Please check your email to confirm your account.', 'success');
-            setAuthMode('login');
-          }
+        // Update the user's display name
+        if (authForm.name) {
+          await updateProfile(userCredential.user, {
+            displayName: authForm.name
+          });
         }
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: authForm.email,
-          password: authForm.password
-        });
 
-        if (error) throw error;
+        // Notify about new signup (email + Google Sheets)
+        try {
+          await fetch('/api/user-signup-webhook', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: authForm.name,
+              email: authForm.email,
+              timestamp: new Date().toISOString()
+            })
+          });
+        } catch (webhookError) {
+          // Don't block signup if webhook fails
+          console.error('Signup webhook error:', webhookError);
+        }
+
+        // Firebase automatically signs in after registration
+        setShowAuth(false);
+        setAuthForm({ email: '', password: '', name: '' });
+        addNotification('Account created successfully! Welcome to CSV Cleaner.', 'success');
+
+      } else {
+        // Sign in with Firebase
+        await signInWithEmailAndPassword(
+          auth,
+          authForm.email,
+          authForm.password
+        );
 
         setShowAuth(false);
         setAuthForm({ email: '', password: '', name: '' });
         addNotification('Welcome back!', 'success');
       }
     } catch (error) {
-      setAuthError(error.message || 'Authentication failed');
+      // Handle Firebase auth errors
+      let errorMessage = 'Authentication failed';
+      switch (error.code) {
+        case 'auth/email-already-in-use':
+          errorMessage = 'This email is already registered. Please sign in instead.';
+          break;
+        case 'auth/invalid-email':
+          errorMessage = 'Invalid email address.';
+          break;
+        case 'auth/weak-password':
+          errorMessage = 'Password should be at least 6 characters.';
+          break;
+        case 'auth/user-not-found':
+          errorMessage = 'No account found with this email.';
+          break;
+        case 'auth/wrong-password':
+          errorMessage = 'Incorrect password.';
+          break;
+        case 'auth/invalid-credential':
+          errorMessage = 'Invalid email or password.';
+          break;
+        case 'auth/too-many-requests':
+          errorMessage = 'Too many failed attempts. Please try again later.';
+          break;
+        default:
+          errorMessage = error.message || 'Authentication failed';
+      }
+      setAuthError(errorMessage);
     } finally {
       setAuthLoading(false);
     }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await signOut(auth);
     setShowApp(false);
     setFiles([]);
     setActiveTab(null);
@@ -723,18 +804,54 @@ const EmailListCleaner = () => {
     try {
       const reader = new FileReader();
 
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         try {
-          const binaryStr = event.target.result;
-          const workbook = XLSX.read(binaryStr, {
-            type: 'binary',
-            // Security: Disable formula execution
-            cellFormula: false,
-            cellHTML: false,
-          });
+          const arrayBuffer = event.target.result;
+          const fileName = uploadedFile.name.toLowerCase();
+          let rawData = [];
 
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rawData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+          if (fileName.endsWith('.csv')) {
+            // Handle CSV files
+            const text = new TextDecoder().decode(arrayBuffer);
+            rawData = parseCSV(text);
+          } else {
+            // Handle Excel files (.xlsx, .xls) with ExcelJS
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(arrayBuffer);
+
+            const worksheet = workbook.worksheets[0];
+            if (!worksheet) {
+              throw new Error('No worksheet found in file');
+            }
+
+            // Convert worksheet to array of arrays (like xlsx library did)
+            worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+              const rowValues = [];
+              row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                // Security: Get raw value, not formula results
+                let value = cell.value;
+
+                // Handle different cell types safely
+                if (value === null || value === undefined) {
+                  value = '';
+                } else if (typeof value === 'object') {
+                  // Handle rich text, dates, formulas, etc.
+                  if (value.text) {
+                    value = value.text; // Rich text
+                  } else if (value.result !== undefined) {
+                    value = value.result; // Formula result (but we ignore formulas for security)
+                    value = ''; // Actually, skip formula results for security
+                  } else if (value instanceof Date) {
+                    value = value.toISOString();
+                  } else {
+                    value = String(value);
+                  }
+                }
+                rowValues[colNumber - 1] = value;
+              });
+              rawData.push(rowValues);
+            });
+          }
 
           // Security: Validate file content
           const contentValidation = validateFileContent(rawData);
@@ -796,11 +913,8 @@ const EmailListCleaner = () => {
         setLoading(false);
       };
 
-      if (uploadedFile.name.endsWith('.csv')) {
-        reader.readAsText(uploadedFile);
-      } else {
-        reader.readAsBinaryString(uploadedFile);
-      }
+      // Read as ArrayBuffer for both CSV and Excel files
+      reader.readAsArrayBuffer(uploadedFile);
     } catch (error) {
       console.error('Error reading file:', error);
       addNotification('Error reading file. Please try again.', 'error');
@@ -1665,8 +1779,8 @@ const EmailListCleaner = () => {
                 <button
                   onClick={() => setShowColumnManager(!showColumnManager)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition ${showColumnManager
-                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
+                    : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                     }`}
                 >
                   <Columns className="w-4 h-4" />
@@ -1763,8 +1877,8 @@ const EmailListCleaner = () => {
                         <button
                           onClick={() => handleToggleColumn(activeFile.id, col.id)}
                           className={`p-1.5 rounded transition ${col.enabled
-                              ? 'text-green-600 hover:bg-green-50'
-                              : 'text-gray-400 hover:bg-gray-100'
+                            ? 'text-green-600 hover:bg-green-50'
+                            : 'text-gray-400 hover:bg-gray-100'
                             }`}
                           title={col.enabled ? 'Hide column' : 'Show column'}
                         >
