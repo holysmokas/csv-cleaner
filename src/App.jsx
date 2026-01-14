@@ -8,7 +8,8 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-  updateProfile
+  updateProfile,
+  sendEmailVerification
 } from './lib/firebase';
 
 // Footer Component
@@ -456,6 +457,7 @@ const EmailListCleaner = () => {
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [showResendVerification, setShowResendVerification] = useState(false);
 
   // App state
   const [showApp, setShowApp] = useState(false);
@@ -491,12 +493,19 @@ const EmailListCleaner = () => {
     // Listen for Firebase auth changes
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser) {
-        setUser({
-          id: firebaseUser.uid,
-          email: firebaseUser.email,
-          name: firebaseUser.displayName || firebaseUser.email.split('@')[0]
-        });
-        setIsAuthenticated(true);
+        // Check if email is verified
+        if (firebaseUser.emailVerified) {
+          setUser({
+            id: firebaseUser.uid,
+            email: firebaseUser.email,
+            name: firebaseUser.displayName || firebaseUser.email.split('@')[0]
+          });
+          setIsAuthenticated(true);
+        } else {
+          // User exists but email not verified - sign them out
+          setUser(null);
+          setIsAuthenticated(false);
+        }
       } else {
         setUser(null);
         setIsAuthenticated(false);
@@ -556,6 +565,9 @@ const EmailListCleaner = () => {
           });
         }
 
+        // Send email verification
+        await sendEmailVerification(userCredential.user);
+
         // Notify about new signup (email + Google Sheets)
         try {
           await fetch('/api/user-signup-webhook', {
@@ -572,20 +584,33 @@ const EmailListCleaner = () => {
           console.error('Signup webhook error:', webhookError);
         }
 
-        // Firebase automatically signs in after registration
-        setShowAuth(false);
+        // Sign out until email is verified
+        await signOut(auth);
+
         setAuthForm({ email: '', password: '', name: '' });
-        addNotification('Account created successfully! Welcome to CSV Cleaner.', 'success');
+        setAuthMode('login');
+        addNotification('Account created! Please check your email to verify your account before signing in.', 'success');
 
       } else {
         // Sign in with Firebase
-        await signInWithEmailAndPassword(
+        const userCredential = await signInWithEmailAndPassword(
           auth,
           authForm.email,
           authForm.password
         );
 
+        // Check if email is verified
+        if (!userCredential.user.emailVerified) {
+          // Offer to resend verification email
+          await signOut(auth);
+          setShowResendVerification(true);
+          setAuthError('Please verify your email before signing in. Check your inbox for the verification link.');
+          setAuthLoading(false);
+          return;
+        }
+
         setShowAuth(false);
+        setShowResendVerification(false);
         setAuthForm({ email: '', password: '', name: '' });
         addNotification('Welcome back!', 'success');
       }
@@ -630,6 +655,42 @@ const EmailListCleaner = () => {
     setActiveTab(null);
     setPaid(false);
     addNotification('Logged out successfully', 'info');
+  };
+
+  // Resend verification email
+  const resendVerificationEmail = async () => {
+    if (!authForm.email || !authForm.password) {
+      setAuthError('Please enter your email and password first.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      // Temporarily sign in to get the user object
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        authForm.email,
+        authForm.password
+      );
+
+      // Send verification email
+      await sendEmailVerification(userCredential.user);
+
+      // Sign out again
+      await signOut(auth);
+
+      setShowResendVerification(false);
+      setAuthError('');
+      addNotification('Verification email sent! Please check your inbox.', 'success');
+    } catch (error) {
+      let errorMessage = 'Failed to resend verification email.';
+      if (error.code === 'auth/too-many-requests') {
+        errorMessage = 'Too many requests. Please wait a few minutes before trying again.';
+      }
+      setAuthError(errorMessage);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   // File processing functions with security
@@ -1488,6 +1549,16 @@ const EmailListCleaner = () => {
               {authError && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
                   {authError}
+                  {showResendVerification && (
+                    <button
+                      type="button"
+                      onClick={resendVerificationEmail}
+                      disabled={authLoading}
+                      className="block w-full mt-3 bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-lg font-medium transition disabled:opacity-50"
+                    >
+                      {authLoading ? 'Sending...' : 'Resend Verification Email'}
+                    </button>
+                  )}
                 </div>
               )}
 

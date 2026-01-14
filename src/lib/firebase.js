@@ -6,7 +6,8 @@ import {
     signInWithEmailAndPassword,
     signOut,
     onAuthStateChanged,
-    updateProfile
+    updateProfile,
+    sendEmailVerification
 } from 'firebase/auth';
 
 // Your Firebase configuration
@@ -32,8 +33,9 @@ export {
     signInWithEmailAndPassword,
     signOut,
     onAuthStateChanged,
-    updateProfile
+    updateProfile,
+    sendEmailVerification
 };
 
 
-// Initialize Firebase
+
